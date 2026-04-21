@@ -655,6 +655,10 @@ async function ensureReady(ctx: ExtensionContext, signal?: AbortSignal): Promise
 	runtimeState.lastPermissionCheckAt = Date.now();
 }
 
+export async function ensureComputerUseSetup(ctx: ExtensionContext, signal?: AbortSignal): Promise<void> {
+	await ensureReady(ctx, signal);
+}
+
 function parseApps(result: unknown): HelperApp[] {
 	const array = Array.isArray(result) ? result : (result as any)?.apps;
 	if (!Array.isArray(array)) return [];

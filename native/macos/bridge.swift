@@ -1201,10 +1201,16 @@ final class Bridge {
 
 		if semaphore.wait(timeout: .now() + .seconds(12)) == .timedOut {
 			task.cancel()
+			if let payload = try systemScreenshotWindow(windowId: windowId) {
+				return payload
+			}
 			throw BridgeFailure(message: "Screenshot timed out while capturing window \(windowId)", code: "screenshot_timeout")
 		}
 
 		if let error = capturedError.value {
+			if let payload = try systemScreenshotWindow(windowId: windowId) {
+				return payload
+			}
 			if let failure = error as? BridgeFailure {
 				throw failure
 			}
@@ -1212,9 +1218,16 @@ final class Bridge {
 		}
 
 		guard let image = capturedImage.value else {
+			if let payload = try systemScreenshotWindow(windowId: windowId) {
+				return payload
+			}
 			throw BridgeFailure(message: "Screenshot failed", code: "screenshot_failed")
 		}
 
+		return try screenshotPayload(image: image, windowId: windowId)
+	}
+
+	private func screenshotPayload(image: CGImage, windowId: UInt32) throws -> [String: Any] {
 		guard let pngData = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) else {
 			throw BridgeFailure(message: "Failed to encode screenshot as PNG", code: "encoding_failed")
 		}
@@ -1228,6 +1241,21 @@ final class Bridge {
 			"height": image.height,
 			"scaleFactor": scale,
 		]
+	}
+
+	private func systemScreenshotWindow(windowId: UInt32) throws -> [String: Any]? {
+		let tempUrl = FileManager.default.temporaryDirectory.appendingPathComponent("pi-cu-\(UUID().uuidString).png")
+		defer { try? FileManager.default.removeItem(at: tempUrl) }
+
+		let process = Process()
+		process.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+		process.arguments = ["-x", "-l", String(windowId), tempUrl.path]
+		try process.run()
+		process.waitUntilExit()
+		guard process.terminationStatus == 0 else { return nil }
+		guard let data = try? Data(contentsOf: tempUrl), !data.isEmpty else { return nil }
+		guard let imageRep = NSBitmapImageRep(data: data), let cgImage = imageRep.cgImage else { return nil }
+		return try screenshotPayload(image: cgImage, windowId: windowId)
 	}
 
 	private func currentWindowBounds(windowId: UInt32) -> CGRect? {
@@ -1340,6 +1368,9 @@ final class Bridge {
 	}
 
 }
+
+_ = NSApplication.shared
+NSApp.setActivationPolicy(.prohibited)
 
 let bridge = Bridge()
 bridge.run()

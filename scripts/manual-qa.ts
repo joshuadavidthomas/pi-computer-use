@@ -4,7 +4,17 @@ import path from "node:path";
 
 const ALLOW_FOREGROUND_QA =
 	process.argv.includes("--allow-foreground-qa") || process.env.PI_COMPUTER_USE_ALLOW_FOREGROUND_QA === "1";
+const ALLOW_SCREEN_TAKEOVER =
+	process.argv.includes("--allow-screen-takeover") || process.env.PI_COMPUTER_USE_ALLOW_SCREEN_TAKEOVER === "1";
 const STRICT_AX_MODE = process.env.PI_COMPUTER_USE_STEALTH === "1" || process.env.PI_COMPUTER_USE_STRICT_AX === "1";
+const SAFE_ONLY_QA = !ALLOW_SCREEN_TAKEOVER;
+const SECTION_ARG = process.argv.find((arg) => arg.startsWith("--section="));
+const SELECTED_SECTIONS = new Set(
+	(SECTION_ARG ? SECTION_ARG.slice("--section=".length) : "all")
+		.split(",")
+		.map((value) => value.trim().toLowerCase())
+		.filter(Boolean),
+);
 import { executeClick, executeScreenshot, executeTypeText, executeWait, reconstructStateFromBranch, stopBridge } from "../src/bridge.ts";
 
 type ResultRecord = {
@@ -12,6 +22,10 @@ type ResultRecord = {
 	status: "PASS" | "FAIL" | "SKIP";
 	details?: string;
 };
+
+function shouldRunSection(name: string): boolean {
+	return SELECTED_SECTIONS.has("all") || SELECTED_SECTIONS.has(name);
+}
 
 function makeCtx(branchEntries: any[] = []): any {
 	return {
@@ -323,6 +337,11 @@ async function main() {
 		console.log("Re-run with --allow-foreground-qa (or PI_COMPUTER_USE_ALLOW_FOREGROUND_QA=1) when ready.");
 		return;
 	}
+	if (SAFE_ONLY_QA) {
+		console.log("Running manual QA in safe-only mode.");
+		console.log("Intrusive flows that open apps or activate Finder will be skipped.");
+		console.log("Add --allow-screen-takeover (or PI_COMPUTER_USE_ALLOW_SCREEN_TAKEOVER=1) to run the full intrusive matrix.");
+	}
 
 	let latestCaptureId = "";
 	let latestWidth = 0;
@@ -342,58 +361,74 @@ async function main() {
 		results.push({ name, status: "SKIP", details });
 	}
 
-	try {
-		openApp("TextEdit");
-		openApp("Finder");
-		if (STRICT_AX_MODE) {
-			openApp("Safari");
-			openApp("Reminders");
-		}
-		pass("Environment setup", STRICT_AX_MODE ? "Opened TextEdit, Finder, and attempted Safari/Reminders" : "Opened TextEdit and Finder");
-	} catch (error) {
-		fail("Environment setup", error);
-	}
-
-	await new Promise((resolve) => setTimeout(resolve, 1200));
-
 	let userFrontmostApp = "Finder";
 	let baselineUserContext: any = undefined;
 	let baselineMouse = { x: 0, y: 0 };
-	try {
-		activateApp("Finder");
-		await sleep(250);
-		userFrontmostApp = getFrontmostAppName();
-		baselineUserContext = getUserContext();
-		baselineMouse = getMousePosition();
-		pass(
-			"User context baseline",
-			`frontmost=${userFrontmostApp}, mouse=(${baselineMouse.x.toFixed(1)},${baselineMouse.y.toFixed(1)})`,
-		);
-	} catch (error) {
-		fail("User context baseline", error);
+
+	if (shouldRunSection("core")) {
+		if (SAFE_ONLY_QA) {
+			skip("Environment setup", "Skipped in safe-only QA mode.");
+			skip("User context baseline", "Skipped in safe-only QA mode because it activates Finder.");
+		} else {
+			try {
+				openApp("TextEdit");
+				openApp("Finder");
+				if (STRICT_AX_MODE) {
+					openApp("Safari");
+					openApp("Reminders");
+				}
+				pass("Environment setup", STRICT_AX_MODE ? "Opened TextEdit, Finder, and attempted Safari/Reminders" : "Opened TextEdit and Finder");
+			} catch (error) {
+				fail("Environment setup", error);
+			}
+
+			await new Promise((resolve) => setTimeout(resolve, 1200));
+
+			try {
+				activateApp("Finder");
+				await sleep(250);
+				userFrontmostApp = getFrontmostAppName();
+				baselineUserContext = getUserContext();
+				baselineMouse = getMousePosition();
+				pass(
+					"User context baseline",
+					`frontmost=${userFrontmostApp}, mouse=(${baselineMouse.x.toFixed(1)},${baselineMouse.y.toFixed(1)})`,
+				);
+			} catch (error) {
+				fail("User context baseline", error);
+			}
+		}
+
+		try {
+			await executeClick("qa-missing-target", { x: 10, y: 10 }, undefined, undefined, ctx);
+			fail("Missing target error", new Error("Expected missing-target error but click succeeded"));
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			assert(message.includes("No current controlled window"), "Unexpected missing-target error text");
+			pass("Missing target error", message);
+		}
+
+		try {
+			const result = await executeScreenshot("qa-screenshot-frontmost", {}, undefined, undefined, ctx);
+			const normalized = ensureImageResult("screenshot() frontmost", result);
+			latestCaptureId = normalized.captureId;
+			latestWidth = normalized.width;
+			latestHeight = normalized.height;
+			latestDetails = result.details;
+			pass("screenshot() picks frontmost", `app=${normalized.app} size=${normalized.width}x${normalized.height}`);
+		} catch (error) {
+			fail("screenshot() picks frontmost", error);
+		}
 	}
 
-	try {
-		await executeClick("qa-missing-target", { x: 10, y: 10 }, undefined, undefined, ctx);
-		fail("Missing target error", new Error("Expected missing-target error but click succeeded"));
-	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error);
-		assert(message.includes("No current controlled window"), "Unexpected missing-target error text");
-		pass("Missing target error", message);
-	}
-
-	try {
-		const result = await executeScreenshot("qa-screenshot-frontmost", {}, undefined, undefined, ctx);
-		const normalized = ensureImageResult("screenshot() frontmost", result);
-		latestCaptureId = normalized.captureId;
-		latestWidth = normalized.width;
-		latestHeight = normalized.height;
-		latestDetails = result.details;
-		pass("screenshot() picks frontmost", `app=${normalized.app} size=${normalized.width}x${normalized.height}`);
-	} catch (error) {
-		fail("screenshot() picks frontmost", error);
-	}
-
+	if (shouldRunSection("navigation")) {
+	if (SAFE_ONLY_QA) {
+		skip("Target switching", "Skipped in safe-only QA mode.");
+		skip("Strict target navigation", "Skipped in safe-only QA mode.");
+		skip("Strict target navigation (Notes)", "Skipped in safe-only QA mode.");
+		skip("Strict target navigation (Calendar)", "Skipped in safe-only QA mode.");
+		skip("Strict target navigation (Chrome)", "Skipped in safe-only QA mode.");
+	} else {
 	try {
 		const textEditShot = await executeScreenshot(
 			"qa-screenshot-textedit",
@@ -516,6 +551,18 @@ async function main() {
 		}
 	}
 
+	}
+	}
+
+	if (shouldRunSection("actions")) {
+	if (SAFE_ONLY_QA) {
+		skip("User top-level view preserved on screenshot", "Skipped in safe-only QA mode.");
+		skip("Click action + capture refresh", "Skipped in safe-only QA mode because it activates Finder.");
+		skip("Removed pointer tools", "double_click, move_mouse, drag, scroll, and keypress were removed from the semantic-only runtime.");
+		skip("Wait action", "Skipped in safe-only QA mode because it depends on prepared target state.");
+		skip("Type text + clipboard restore", "Skipped in safe-only QA mode because it activates Finder.");
+		skip("Minimized window fallback", "Minimized-window fallback was removed from the semantic-only runtime.");
+	} else {
 	try {
 		activateApp("Finder");
 		await sleep(250);
@@ -688,7 +735,10 @@ async function main() {
 	}
 
 	skip("Minimized window fallback", "Minimized-window fallback was removed from the semantic-only runtime.");
+	}
+	}
 
+	if (shouldRunSection("resume")) {
 	try {
 		const resetShot = await executeScreenshot("qa-reset-target", { app: "Finder" }, undefined, undefined, ctx);
 		const resetNorm = ensureImageResult("reset target screenshot", resetShot);
@@ -777,8 +827,15 @@ async function main() {
 	} catch (error) {
 		fail("Missing target after resume", error);
 	}
+	}
 
-	if (STRICT_AX_MODE) {
+	if (shouldRunSection("strict-smokes") && STRICT_AX_MODE) {
+		if (SAFE_ONLY_QA) {
+			skip("Strict TextEdit targeting", "Skipped in safe-only QA mode.");
+			skip("Strict Finder search smoke", "Skipped in safe-only QA mode.");
+			skip("Strict browser smoke", "Skipped in safe-only QA mode.");
+			skip("Strict Reminders smoke", "Skipped in safe-only QA mode.");
+		} else {
 		try {
 			const textEditShot = await executeScreenshot("qa-strict-textedit", { app: "TextEdit" }, undefined, undefined, ctx);
 			const textNorm = ensureImageResult("strict screenshot TextEdit", textEditShot);
@@ -992,6 +1049,7 @@ async function main() {
 			}
 		} else {
 			skip("Strict Reminders smoke", "Reminders not available");
+		}
 		}
 	} else {
 		// These matrix items need manual/physical setup not guaranteed from this harness.

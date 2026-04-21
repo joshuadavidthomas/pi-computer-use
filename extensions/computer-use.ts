@@ -1,6 +1,14 @@
 import { defineTool, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
-import { executeClick, executeScreenshot, executeTypeText, executeWait, reconstructStateFromBranch, stopBridge } from "../src/bridge.js";
+import {
+	ensureComputerUseSetup,
+	executeClick,
+	executeScreenshot,
+	executeTypeText,
+	executeWait,
+	reconstructStateFromBranch,
+	stopBridge,
+} from "../src/bridge.js";
 
 const screenshotTool = defineTool({
 	name: "screenshot",
@@ -85,6 +93,17 @@ export default function computerUseExtension(pi: ExtensionAPI): void {
 
 	pi.on("session_start", async (_event, ctx) => {
 		reconstructStateFromBranch(ctx);
+
+		if (!ctx.hasUI) {
+			return;
+		}
+
+		try {
+			await ensureComputerUseSetup(ctx);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			ctx.ui.notify(`pi-computer-use is not ready yet. ${message}`, "warning");
+		}
 	});
 
 	pi.on("session_tree", async (_event, ctx) => {

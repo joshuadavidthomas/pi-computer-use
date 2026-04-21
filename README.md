@@ -19,9 +19,9 @@ Public tools:
 - `type_text`
 - `wait`
 
-Default mode is AX-first with fallback for broader compatibility.
+Default mode has built-in screenshot/vision grounding and uses AX-first actions with compatibility fallback when semantic AX control is not enough.
 
-Opt-in stealth mode (`PI_COMPUTER_USE_STEALTH=1` or `PI_COMPUTER_USE_STRICT_AX=1`) keeps the same public surface, but blocks non-AX fallback paths.
+Opt-in stealth mode (`PI_COMPUTER_USE_STEALTH=1` or `PI_COMPUTER_USE_STRICT_AX=1`) keeps the same public surface, but blocks non-AX fallback paths and stays AX-only.
 
 ## Requirements
 
@@ -68,15 +68,23 @@ This follows the standard Pi package install flow used by other Pi packages.
 
 The package tries to copy a bundled prebuilt helper during `postinstall`. If a matching prebuilt is not available, the runtime can build one locally on first use.
 
-## First run
+## First run / required setup
 
-Start Pi in interactive mode and ask it to use the computer-use tools.
+Start Pi in interactive mode.
 
-On first use, the package will guide you through granting:
+On session start, the extension performs a one-time computer-use setup check automatically. If permissions are missing, Pi surfaces that immediately and walks you through setup inline instead of failing later during tool use.
+
+If permissions are missing, the extension will guide you through granting:
 - Accessibility
 - Screen Recording
 
-Accessibility is treated as mandatory for AX-first computer use. Screen Recording is required for window screenshots.
+Permissions required:
+- Screen Recording: lets the agent see the target window and provides screenshot/vision context
+- Accessibility: lets the agent click, focus, and type in the target window
+
+Normally you do not need any additional permission beyond those two.
+
+If you cancel setup, pi-computer-use stays unavailable until setup is completed.
 
 Grant both permissions to the helper at:
 
@@ -96,9 +104,10 @@ Grant both permissions to the helper at:
 - `screenshot` should be called first to choose a target window
 - Successful actions return a fresh screenshot for the next step
 - The helper uses a non-intrusive strategy where possible instead of taking over your cursor globally
-- Accessibility is mandatory: the runtime is being pushed toward AX-first/background-first behavior
+- Accessibility is mandatory for practical use: actions depend on it
+- Screen Recording is mandatory for screenshots and model vision context
 - Public tool surface is `screenshot`, `click`, `type_text`, `wait`
-- Default mode is AX-first, with non-AX fallback when a control cannot be completed semantically
+- Default mode has built-in screenshot/vision grounding and runs AX-first, with non-AX fallback when a control cannot be completed semantically
 - Opt-in stealth mode blocks fallback paths and keeps actions on AX-only semantic paths
 - Tool results include execution metadata so we can verify whether an action used AX or a fallback path
 - Stealth mode remains on the current desktop/session only: no second screen or virtual display, no foreground activation, and no physical cursor takeover
