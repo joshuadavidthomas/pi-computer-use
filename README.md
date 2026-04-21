@@ -19,6 +19,10 @@ Public tools:
 - `type_text`
 - `wait`
 
+Default mode is AX-first with fallback for broader compatibility.
+
+Opt-in stealth mode (`PI_COMPUTER_USE_STEALTH=1` or `PI_COMPUTER_USE_STRICT_AX=1`) keeps the same public surface, but blocks non-AX fallback paths.
+
 ## Requirements
 
 - macOS 15+
@@ -93,11 +97,11 @@ Grant both permissions to the helper at:
 - Successful actions return a fresh screenshot for the next step
 - The helper uses a non-intrusive strategy where possible instead of taking over your cursor globally
 - Accessibility is mandatory: the runtime is being pushed toward AX-first/background-first behavior
-- Public tool surface is semantic-only: `screenshot`, `click`, `type_text`, `wait`
-- `click` is AX-only semantic press/focus, not pointer-event fallback
-- `type_text` is AX value-setting only, not clipboard or raw key fallback
-- Tool results include execution metadata so we can verify that actions stayed on AX paths
-- The runtime remains on the current desktop/session only: no second screen or virtual display, no foreground activation, and no physical cursor takeover
+- Public tool surface is `screenshot`, `click`, `type_text`, `wait`
+- Default mode is AX-first, with non-AX fallback when a control cannot be completed semantically
+- Opt-in stealth mode blocks fallback paths and keeps actions on AX-only semantic paths
+- Tool results include execution metadata so we can verify whether an action used AX or a fallback path
+- Stealth mode remains on the current desktop/session only: no second screen or virtual display, no foreground activation, and no physical cursor takeover
 
 ## Build the helper manually
 

@@ -24,10 +24,10 @@ Use these tools when shell/file tools are not enough and you need to operate a m
 - `captureId` is optional. If provided and stale, refresh with `screenshot`.
 - `wait({ ms })` pauses and then returns a fresh screenshot for polling/loading states.
 - Accessibility permission is mandatory for computer use.
-- Public tool surface is semantic-only: `screenshot`, `click`, `type_text`, `wait`.
-- `click` uses semantic AX press/focus only.
-- `type_text` uses AX value setting only.
-- Operation must stay background-safe: no second screen or virtual display, no foreground activation, and no physical cursor takeover.
+- Public tool surface is `screenshot`, `click`, `type_text`, `wait`.
+- Default mode is AX-first with fallback when a control cannot be completed semantically.
+- Opt-in stealth mode (`PI_COMPUTER_USE_STEALTH=1` or `PI_COMPUTER_USE_STRICT_AX=1`) blocks fallback paths.
+- In stealth mode, operation must stay background-safe: no second screen or virtual display, no foreground activation, and no physical cursor takeover.
 
 ## When errors happen
 

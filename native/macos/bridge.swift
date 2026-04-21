@@ -171,6 +171,8 @@ final class Bridge {
 			return try getUserContext()
 		case "screenshot":
 			return try screenshot(request)
+		case "mouseClick":
+			return try mouseClick(request)
 		case "axPressAtPoint":
 			return try axPressAtPoint(request)
 		case "axDescribeAtPoint":
@@ -189,6 +191,8 @@ final class Bridge {
 			return try focusedElement(request)
 		case "setValue":
 			return try setValue(request)
+		case "typeText":
+			return try typeText(request)
 		case "getMousePosition":
 			return getMousePosition()
 		default:
@@ -409,6 +413,20 @@ final class Bridge {
 	private func screenshot(_ request: [String: Any]) throws -> [String: Any] {
 		let windowId = UInt32(try intArg(request, "windowId"))
 		return try captureWindow(windowId: windowId)
+	}
+
+	private func mouseClick(_ request: [String: Any]) throws -> [String: Any] {
+		let windowId = UInt32(try intArg(request, "windowId"))
+		let x = try doubleArg(request, "x")
+		let y = try doubleArg(request, "y")
+		guard let targetPid = optionalIntArg(request, "pid").map({ Int32($0) }) else {
+			throw BridgeFailure(message: "mouseClick requires pid in non-intrusive mode", code: "pid_required")
+		}
+		let captureWidth = max(1.0, (try? doubleArg(request, "captureWidth")) ?? 1.0)
+		let captureHeight = max(1.0, (try? doubleArg(request, "captureHeight")) ?? 1.0)
+		let point = try mapWindowPoint(windowId: windowId, x: x, y: y, captureWidth: captureWidth, captureHeight: captureHeight)
+		try postMouseClick(at: point, pid: targetPid)
+		return ["clicked": true]
 	}
 
 	private func axPressAtPoint(_ request: [String: Any]) throws -> [String: Any] {
@@ -957,6 +975,15 @@ final class Bridge {
 		return ["set": true]
 	}
 
+	private func typeText(_ request: [String: Any]) throws -> [String: Any] {
+		let text = try stringArg(request, "text")
+		guard let targetPid = optionalIntArg(request, "pid").map({ Int32($0) }) else {
+			throw BridgeFailure(message: "typeText requires pid in non-intrusive mode", code: "pid_required")
+		}
+		try postUnicodeText(text, pid: targetPid)
+		return ["typed": true]
+	}
+
 	private func getMousePosition() -> [String: Any] {
 		let position = NSEvent.mouseLocation
 		return ["x": position.x, "y": position.y]
@@ -1261,6 +1288,55 @@ final class Bridge {
 		let screenX = bounds.origin.x + bounds.size.width * relX
 		let screenY = bounds.origin.y + bounds.size.height * relY
 		return CGPoint(x: screenX, y: screenY)
+	}
+
+	private func postEvent(_ event: CGEvent, pid: Int32) {
+		event.postToPid(pid)
+	}
+
+	private func postMouseMove(to point: CGPoint, pid: Int32) throws {
+		guard let move = CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .left) else {
+			throw BridgeFailure(message: "Failed to create mouse move event", code: "input_failed")
+		}
+		postEvent(move, pid: pid)
+	}
+
+	private func postMouseClick(at point: CGPoint, pid: Int32) throws {
+		try postMouseMove(to: point, pid: pid)
+		guard let down = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: point, mouseButton: .left),
+			let up = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: point, mouseButton: .left)
+		else {
+			throw BridgeFailure(message: "Failed to create mouse click event", code: "input_failed")
+		}
+		down.setIntegerValueField(.mouseEventClickState, value: 1)
+		up.setIntegerValueField(.mouseEventClickState, value: 1)
+		postEvent(down, pid: pid)
+		usleep(12_000)
+		postEvent(up, pid: pid)
+	}
+
+	private func postUnicodeText(_ text: String, pid: Int32) throws {
+		for scalar in text.unicodeScalars {
+			let char = String(scalar)
+			guard let down = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true),
+				let up = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false)
+			else {
+				throw BridgeFailure(message: "Failed to create unicode key event", code: "input_failed")
+			}
+			setUnicodeString(event: down, text: char)
+			setUnicodeString(event: up, text: char)
+			postEvent(down, pid: pid)
+			usleep(8_000)
+			postEvent(up, pid: pid)
+		}
+	}
+
+	private func setUnicodeString(event: CGEvent, text: String) {
+		var utf16 = Array(text.utf16)
+		utf16.withUnsafeMutableBufferPointer { buffer in
+			guard let base = buffer.baseAddress else { return }
+			event.keyboardSetUnicodeString(stringLength: buffer.count, unicodeString: base)
+		}
 	}
 
 }

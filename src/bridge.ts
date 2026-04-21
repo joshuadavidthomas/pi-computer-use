@@ -55,7 +55,9 @@ interface ExecutionTrace {
 		| "wait"
 		| "ax_press"
 		| "ax_focus"
-		| "ax_set_value";
+		| "coordinate_event_click"
+		| "ax_set_value"
+		| "raw_key_text";
 	axAttempted?: boolean;
 	axSucceeded?: boolean;
 	fallbackUsed?: boolean;
@@ -188,6 +190,7 @@ const ACTION_SETTLE_MS = 280;
 const DEFAULT_WAIT_MS = 1_000;
 
 const RECOVERABLE_SCREENSHOT_ERROR_CODES = new Set(["screenshot_timeout", "window_not_found"]);
+const STRICT_AX_MODE = process.env.PI_COMPUTER_USE_STEALTH === "1" || process.env.PI_COMPUTER_USE_STRICT_AX === "1";
 
 export const HELPER_STABLE_PATH = path.join(os.homedir(), ".pi", "agent", "helpers", "pi-computer-use", "bridge");
 
@@ -227,6 +230,10 @@ function normalizeError(error: unknown): Error {
 
 function isRecoverableScreenshotError(error: unknown): error is HelperCommandError {
 	return error instanceof HelperCommandError && !!error.code && RECOVERABLE_SCREENSHOT_ERROR_CODES.has(error.code);
+}
+
+function strictModeBlock(message: string): never {
+	throw new Error(`${message} Strict AX mode is enabled, so non-AX fallback is blocked.`);
 }
 
 function addRefreshHint(error: unknown): Error {
@@ -1244,14 +1251,28 @@ async function performClick(params: ClickParams, signal?: AbortSignal): Promise<
 			}
 
 			if (!clickedViaAX && !focusedViaAX) {
-				throw new Error(`AX click/focus could not be completed at (${Math.round(params.x)},${Math.round(params.y)}).`);
+				if (STRICT_AX_MODE) {
+					strictModeBlock(`AX click/focus could not be completed at (${Math.round(params.x)},${Math.round(params.y)}).`);
+				}
+				await bridgeCommand(
+					"mouseClick",
+					{
+						windowId: target.windowId,
+						pid: target.pid,
+						x: params.x,
+						y: params.y,
+						captureWidth: capture.width,
+						captureHeight: capture.height,
+					},
+					{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
+				);
 			}
 
 			return {
-				strategy: clickedViaAX ? "ax_press" : "ax_focus",
+				strategy: clickedViaAX ? "ax_press" : focusedViaAX ? "ax_focus" : "coordinate_event_click",
 				axAttempted: true,
-				axSucceeded: true,
-				fallbackUsed: false,
+				axSucceeded: clickedViaAX || focusedViaAX,
+				fallbackUsed: !clickedViaAX && !focusedViaAX,
 			};
 		},
 		(target) =>
@@ -1294,7 +1315,20 @@ async function performTypeText(params: TypeTextParams, signal?: AbortSignal): Pr
 		}
 
 		if (!typed) {
-			throw new Error("AX text entry could not be completed for the currently focused control.");
+			if (STRICT_AX_MODE) {
+				strictModeBlock("AX text entry could not be completed for the currently focused control.");
+			}
+			try {
+				await bridgeCommand(
+					"typeText",
+					{ text, pid: readyTarget.pid },
+					{ signal, timeoutMs: Math.min(90_000, Math.max(COMMAND_TIMEOUT_MS, text.length * 25 + 4_000)) },
+				);
+				typed = true;
+				execution = { strategy: "raw_key_text", axAttempted: true, axSucceeded: false, fallbackUsed: true };
+			} catch {
+				throw new Error("AX text entry could not be completed for the currently focused control.");
+			}
 		}
 
 		stateMayHaveChanged = true;
