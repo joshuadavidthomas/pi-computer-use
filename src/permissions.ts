@@ -11,7 +11,7 @@ export interface PermissionBridge {
 }
 
 const NON_INTERACTIVE_PERMISSION_ERROR =
-	"Computer use requires interactive permission setup. Start pi in interactive mode and grant Accessibility and Screen Recording to the signed pi-computer-use helper. Accessibility is mandatory for AX-first computer use.";
+	"pi-computer-use setup requires an interactive session. Start pi in interactive mode and grant Accessibility and Screen Recording to the pi-computer-use helper. Screen Recording lets the agent see the window. Accessibility lets it interact with the window.";
 
 function throwIfAborted(signal?: AbortSignal): void {
 	if (signal?.aborted) {
@@ -51,26 +51,32 @@ export async function ensurePermissions(
 		options.push("Recheck", "Cancel");
 
 		const prompt = [
-			`Computer use needs ${missing.join(" and ")} permission.`,
-			"Accessibility is required for AX-first background control. Screen Recording is required for screenshots.",
-			"Grant permissions to the signed pi-computer-use helper:",
+			"pi-computer-use needs a one-time macOS setup before its tools can run.",
+			`Missing permissions: ${missing.join(" and ")}`,
+			"",
+			"What each permission does:",
+			"- Screen Recording: lets the agent see the target window and provide screenshot/vision context",
+			"- Accessibility: lets the agent click, focus, and type in the target window",
+			"",
+			"Grant permissions to this helper:",
 			helperPath,
-			"After enabling permissions in System Settings, return here and choose Recheck.",
+			"",
+			"Open the missing System Settings panes, enable the helper, then return here and choose Recheck.",
 		].join("\n");
 
 		const choice = await ctx.ui.select(prompt, options, { signal });
 		if (!choice || choice === "Cancel") {
 			throw new Error(
-				`Computer use permission setup was cancelled. Grant Accessibility and Screen Recording to the signed pi-computer-use helper at ${helperPath}, then retry. Accessibility is required for AX-first computer use.`,
+				`pi-computer-use setup is incomplete. Grant Accessibility and Screen Recording to ${helperPath}, then retry. Screen Recording lets the agent see the window. Accessibility lets it interact with the window.`,
 			);
 		}
 
 		if (choice === "Open Accessibility Settings") {
 			await bridge.openPermissionPane("accessibility", signal);
-			ctx.ui.notify("Opened Accessibility settings. Enable the helper, then choose Recheck.", "info");
+			ctx.ui.notify("Opened Accessibility settings. Enable the pi-computer-use helper, then come back and choose Recheck.", "info");
 		} else if (choice === "Open Screen Recording Settings") {
 			await bridge.openPermissionPane("screenRecording", signal);
-			ctx.ui.notify("Opened Screen Recording settings. Enable the helper, then choose Recheck.", "info");
+			ctx.ui.notify("Opened Screen Recording settings. Enable the pi-computer-use helper, then come back and choose Recheck.", "info");
 		}
 
 		status = await bridge.checkPermissions(signal);
