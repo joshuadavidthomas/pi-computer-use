@@ -1,119 +1,41 @@
-# pi-computer-use
+> Latest release: **v0.1.3** — added semantic AX target refs via `click({ ref: "@eN" })`, switched to semantic-first turn updates with image fallback only when needed, added an official benchmark harness in `benchmarks/`, and improved benchmarked performance from `axOnlyRatio 0.5 → 1.0` (**+100%**) and `avgLatencyMs 11194 → 404` (**-10790ms / -96.4%**).
 
-**Demo:** [`pi-computer-use.mp4`](./assets/pi-computer-use.mp4)
+# pi-computer-use
 
 ![pi-computer-use](./assets/img.jpg)
 
-Add Codex-style computer-use tools to Pi on macOS.
+Codex-style computer use for Pi on macOS with AX-first semantic targeting, semantic state updates, and image fallback when semantic coverage is weak.
 
-This package bundles:
-- a Pi extension that adds semantic computer-use tools
-- a skill that teaches the agent how to use those tools reliably
-- a native macOS helper used for screenshots and AX dispatch
+> For setup, development, benchmarks, and contribution workflow, see [CONTRIBUTING.md](./CONTRIBUTING.md).
 
-## What you get
+## Features
 
-Public tools:
-- `screenshot`
-- `click`
-- `type_text`
-- `wait`
+- Public tools: `screenshot`, `click`, `type_text`, `wait`
+- AX target refs in tool results, e.g. `@e1`, for semantic targeting
+- `click({ ref: "@eN" })` support alongside coordinate clicks
+- Semantic-first turn updates with image attachment fallback only when needed
+- AX-first execution with optional strict AX-only mode via `PI_COMPUTER_USE_STEALTH=1` or `PI_COMPUTER_USE_STRICT_AX=1`
+- Browser-aware targeting, including isolated browser window preference when appropriate
+- Non-intrusive helper behavior where possible instead of global cursor takeover
+- Official benchmark harness in `benchmarks/` with baseline comparison and regression checks
 
-`screenshot` includes compact AX targets when available, and `click` can use either an AX ref like `@e1` or screenshot coordinates. AX refs are preferred whenever a suitable target is listed, and images are attached only when semantic AX targeting is insufficient or too ambiguous.
+## Setup
 
-Default mode has built-in screenshot/vision grounding and uses AX-first actions with compatibility fallback when semantic AX control is not enough.
-
-## Release notes
-
-### v0.1.3
-
-- Added compact AX target refs in tool results and direct semantic targeting through `click({ ref: "@eN" })`
-- Switched to semantic-first turn updates with image attachment fallback only when AX coverage is weak or ambiguous
-- Added an official contributor benchmark in `benchmarks/` with saved baselines, regression checks, and explicit goals
-- Improved AX extraction quality and reduced end-to-end latency substantially in benchmarked flows
-- Current benchmark goals pass with observed results including:
-  - `axOnlyRatio = 1.0`
-  - `avgLatencyMs = 404`
-  - `avgTargetingLatencyMs = 378`
-
-### v0.1.2
-
-- Browser computer use now prefers creating a new window instead of reusing the user's current browser window/tab context
-- When an isolated browser window is created, pi-computer-use automatically switches focus back to the user's original window
-- During the brief window-switch transition, pi-computer-use temporarily suppresses input to prevent accidental typing/clicking in the wrong window
-
-Opt-in stealth mode (`PI_COMPUTER_USE_STEALTH=1` or `PI_COMPUTER_USE_STRICT_AX=1`) keeps the same public surface, but blocks non-AX fallback paths and stays AX-only.
-
-## Requirements
-
-- macOS 15+
-- Pi / `@mariozechner/pi-coding-agent`
-- Node.js 20.6+
-- Accessibility and Screen Recording permission for the helper binary
-
-## Install
+### Install
 
 `pi-computer-use` currently resolves to an unrelated package. Install this package from GitHub or a local checkout instead.
 
-### Global install
-
 ```bash
 pi install git:github.com/injaneity/pi-computer-use
-```
-
-### Project-local install
-
-```bash
+# or project-local
 pi install -l git:github.com/injaneity/pi-computer-use
-```
-
-### Install from a local checkout
-
-```bash
+# or from a local checkout
 pi install /absolute/path/to/pi-computer-use
-# or
-pi install -l /absolute/path/to/pi-computer-use
 ```
 
-This follows the standard Pi package install flow used by other Pi packages.
+### First run
 
-### Local development without duplicate loads
-
-If you already have `pi-computer-use` installed globally or locally through `pi install`, running a checkout directly with `pi -e .` can load both copies at once. For local development, either remove the installed copy first or disable extension discovery for that run:
-
-```bash
-pi --no-extensions -e .
-```
-
-## What happens after install
-
-- Pi loads the extension from `extensions/`
-- Pi loads the skill from `skills/`
-- the helper is installed to:
-
-```text
-~/.pi/agent/helpers/pi-computer-use/bridge
-```
-
-The package tries to copy a bundled prebuilt helper during `postinstall`. If a matching prebuilt is not available, the runtime can build one locally on first use.
-
-## First run / required setup
-
-Start Pi in interactive mode.
-
-On session start, the extension performs a one-time computer-use setup check automatically. If permissions are missing, Pi surfaces that immediately and walks you through setup inline instead of failing later during tool use.
-
-If permissions are missing, the extension will guide you through granting:
-- Accessibility
-- Screen Recording
-
-Permissions required:
-- Screen Recording: lets the agent see the target window and provides screenshot/vision context
-- Accessibility: lets the agent click, focus, and type in the target window
-
-Normally you do not need any additional permission beyond those two.
-
-If you cancel setup, pi-computer-use stays unavailable until setup is completed.
+Start Pi in interactive mode. On session start, the extension checks whether computer-use is ready and guides you through setup if permissions are missing.
 
 Grant both permissions to the helper at:
 
@@ -121,62 +43,22 @@ Grant both permissions to the helper at:
 ~/.pi/agent/helpers/pi-computer-use/bridge
 ```
 
-## Example prompts
+Required permissions:
+- Accessibility
+- Screen Recording
 
-- `Use the computer-use tools to inspect the frontmost window.`
-- `Take a screenshot of the current window and click the Continue button.`
-- `Switch to Safari, open the current tab area, and report what you see.`
+### Helper build
 
-## Notes
-
-- Target platform: macOS only
-- `screenshot` should be called first to choose a target window
-- Browser targeting prefers an isolated browser window instead of reusing the user's current tabbed window
-- When an isolated browser window is created, focus is restored to the user's original window immediately afterward
-- During the brief restore/switch phase, input is temporarily suppressed to prevent accidental input in the wrong window
-- In strict AX mode, isolated browser-window bootstrap is blocked because it is not AX-only; open a dedicated browser window first
-- Successful actions return the latest semantic state for the next step; images are attached only when semantic AX targeting is insufficient or too ambiguous
-- The helper uses a non-intrusive strategy where possible instead of taking over your cursor globally
-- Accessibility is mandatory for practical use: actions depend on it
-- Screen Recording is mandatory for screenshots and model vision context
-- Public tool surface is `screenshot`, `click`, `type_text`, `wait`
-- Default mode has built-in screenshot/vision grounding and runs AX-first, with non-AX fallback when a control cannot be completed semantically
-- Opt-in stealth mode blocks fallback paths and keeps actions on AX-only semantic paths
-- Tool results include execution metadata so we can verify whether an action used AX or a fallback path
-- Stealth mode remains on the current desktop/session only: no second screen or virtual display, no foreground activation, and no physical cursor takeover
-
-## Official QA benchmark
-
-Use the official benchmark harness in `benchmarks/` before claiming semantic-targeting, fallback, or latency improvements.
-
-```bash
-npm run benchmark:qa
-# or for wider app coverage
-npm run benchmark:qa:full
-```
-
-See `benchmarks/README.md` for baseline comparison and regression checking.
-
-## Build the helper manually
-
-If you need to build the helper yourself:
+If you need to build the helper manually:
 
 ```bash
 node scripts/build-native.mjs
-```
-
-You can also build to a custom output path:
-
-```bash
+# or build directly to the installed helper path
 node scripts/build-native.mjs --output ~/.pi/agent/helpers/pi-computer-use/bridge
 ```
 
-## Remove
+### Remove
 
 ```bash
 pi remove git:github.com/injaneity/pi-computer-use
 ```
-
-## License
-
-MIT
