@@ -28,11 +28,11 @@ The package is published on npm as `@injaneity/pi-computer-use`.
 #### Pi
 
 ```bash
-pi install @injaneity/pi-computer-use
-# pinned version
-pi install @injaneity/pi-computer-use@0.1.3
+pi install git:github.com/injaneity/pi-computer-use#v0.1.3
 # project-local
-pi install -l @injaneity/pi-computer-use
+pi install -l git:github.com/injaneity/pi-computer-use#v0.1.3
+# local checkout
+pi install /absolute/path/to/pi-computer-use
 ```
 
 #### npm
@@ -43,17 +43,7 @@ npm install @injaneity/pi-computer-use
 npm install @injaneity/pi-computer-use@0.1.3
 ```
 
-#### GitHub release tag fallback
-
-```bash
-pi install git:github.com/injaneity/pi-computer-use#v0.1.3
-# project-local
-pi install -l git:github.com/injaneity/pi-computer-use#v0.1.3
-# local checkout
-pi install /absolute/path/to/pi-computer-use
-```
-
-Use the GitHub tag fallback if you want to install directly from the release tag.
+Use the GitHub release tag for `pi install`. Use npm when you want the package directly through the npm registry.
 
 ### First run
 
@@ -100,7 +90,7 @@ node scripts/build-native.mjs --output ~/.pi/agent/helpers/pi-computer-use/bridg
 ### Remove
 
 ```bash
-pi remove @injaneity/pi-computer-use
-# or if installed from a git tag
 pi remove git:github.com/injaneity/pi-computer-use#v0.1.3
+# or remove the npm package from a JS project
+npm remove @injaneity/pi-computer-use
 ```
