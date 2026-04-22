@@ -23,15 +23,37 @@ Codex-style computer use for Pi on macOS with AX-first semantic targeting, seman
 
 ### Install
 
-`pi-computer-use` currently resolves to an unrelated package. Install this package from GitHub or a local checkout instead.
+Preferred install methods:
+
+#### Pi
 
 ```bash
-pi install git:github.com/injaneity/pi-computer-use
-# or project-local
-pi install -l git:github.com/injaneity/pi-computer-use
-# or from a local checkout
+pi install @injaneity/pi-computer-use
+# pinned version
+pi install @injaneity/pi-computer-use@0.1.3
+# project-local
+pi install -l @injaneity/pi-computer-use
+```
+
+#### npm
+
+```bash
+npm install @injaneity/pi-computer-use
+# pinned version
+npm install @injaneity/pi-computer-use@0.1.3
+```
+
+#### GitHub release tag fallback
+
+```bash
+pi install git:github.com/injaneity/pi-computer-use#v0.1.3
+# project-local
+pi install -l git:github.com/injaneity/pi-computer-use#v0.1.3
+# local checkout
 pi install /absolute/path/to/pi-computer-use
 ```
+
+Use the GitHub tag fallback if you want to install directly from the release tag.
 
 ### First run
 
