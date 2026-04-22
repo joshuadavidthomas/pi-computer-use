@@ -1,6 +1,6 @@
 {
   "name": "@injaneity/pi-computer-use",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Codex-style computer-use tools for Pi on macOS.",
   "type": "module",
   "keywords": [
@@ -30,6 +30,7 @@
     "src",
     "scripts/build-native.mjs",
     "scripts/setup-helper.mjs",
+    "benchmarks",
     "native/macos/bridge.swift",
     "prebuilt/macos",
     "assets",
@@ -48,7 +49,9 @@
   },
   "scripts": {
     "postinstall": "node scripts/setup-helper.mjs --postinstall",
-    "build:native": "node scripts/build-native.mjs"
+    "build:native": "node scripts/build-native.mjs",
+    "benchmark:qa": "npx -y tsx benchmarks/qa.ts --allow-foreground-qa",
+    "benchmark:qa:full": "npx -y tsx benchmarks/qa.ts --allow-foreground-qa --allow-screen-takeover"
   },
   "peerDependencies": {
     "@mariozechner/pi-coding-agent": "*",

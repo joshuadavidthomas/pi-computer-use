@@ -13,10 +13,11 @@ import {
 const screenshotTool = defineTool({
 	name: "screenshot",
 	label: "Screenshot",
-	description: "Capture the current controlled macOS window, or select a new target window by app and title.",
+	description: "Capture the current controlled macOS window, returning semantic AX targets and attaching an image only when fallback is needed.",
 	promptSnippet: "Capture and select a macOS window. Call this first and to switch windows.",
 	promptGuidelines: [
-		"Call screenshot first to choose a window and get coordinates.",
+		"Call screenshot first to choose a window and inspect the latest UI state.",
+		"If screenshot returns AX targets, prefer those targets over coordinate clicks.",
 		"Call screenshot(app, windowTitle) to switch the controlled window.",
 		"For browsers, prefer a separate window for agent work instead of opening a new tab in the user's current window.",
 		"In strict AX mode, do not bootstrap a new browser window; target an existing dedicated browser window instead.",
@@ -34,16 +35,18 @@ const screenshotTool = defineTool({
 const clickTool = defineTool({
 	name: "click",
 	label: "Click",
-	description: "Click inside the current controlled window at screenshot-relative coordinates.",
-	promptSnippet: "Click in the current window at coordinates from the latest screenshot.",
+	description: "Click inside the current controlled window by AX target ref or screenshot-relative coordinates.",
+	promptSnippet: "Click in the current window using coordinates from the latest screenshot or an AX target ref like @e1.",
 	promptGuidelines: [
+		"When screenshot returns AX targets, prefer click(ref=@eN) and use coordinates only when no suitable AX target is available.",
 		"Coordinates are window-relative screenshot pixels from the latest screenshot.",
-		"This tool returns a fresh screenshot after a successful click.",
+		"This tool returns the latest semantic state and attaches an image only when fallback is needed.",
 	],
 	executionMode: "sequential",
 	parameters: Type.Object({
-		x: Type.Number({ description: "X coordinate in screenshot pixels" }),
-		y: Type.Number({ description: "Y coordinate in screenshot pixels" }),
+		x: Type.Optional(Type.Number({ description: "X coordinate in screenshot pixels" })),
+		y: Type.Optional(Type.Number({ description: "Y coordinate in screenshot pixels" })),
+		ref: Type.Optional(Type.String({ description: "Optional AX target ref from the latest screenshot, e.g. @e1" })),
 		captureId: Type.Optional(Type.String({ description: "Optional screenshot validation id" })),
 	}),
 	async execute(toolCallId, params, signal, onUpdate, ctx) {
@@ -58,7 +61,7 @@ const typeTextTool = defineTool({
 	promptSnippet: "Type into the focused control in the current window.",
 	promptGuidelines: [
 		"Click a field first if needed, then call type_text.",
-		"Returns an updated screenshot after typing.",
+		"Returns the latest semantic state and attaches an image only when fallback is needed.",
 	],
 	executionMode: "sequential",
 	parameters: Type.Object({
@@ -72,11 +75,11 @@ const typeTextTool = defineTool({
 const waitTool = defineTool({
 	name: "wait",
 	label: "Wait",
-	description: "Pause briefly, then return a fresh screenshot of the current controlled window.",
-	promptSnippet: "Wait briefly and refresh the current window screenshot.",
+	description: "Pause briefly, then return the latest semantic state of the current controlled window.",
+	promptSnippet: "Wait briefly and refresh the current window state.",
 	promptGuidelines: [
 		"Use this for loading, animations, and polling async UI updates.",
-		"Returns a new screenshot after waiting.",
+		"Returns the latest semantic state and attaches an image only when fallback is needed.",
 	],
 	executionMode: "sequential",
 	parameters: Type.Object({
@@ -87,11 +90,27 @@ const waitTool = defineTool({
 	},
 });
 
+function isDuplicateToolConflict(error: unknown): boolean {
+	if (!(error instanceof Error)) {
+		return false;
+	}
+
+	return /Tool ".*" conflicts with /.test(error.message);
+}
+
 export default function computerUseExtension(pi: ExtensionAPI): void {
-	pi.registerTool(screenshotTool);
-	pi.registerTool(clickTool);
-	pi.registerTool(typeTextTool);
-	pi.registerTool(waitTool);
+	try {
+		pi.registerTool(screenshotTool);
+		pi.registerTool(clickTool);
+		pi.registerTool(typeTextTool);
+		pi.registerTool(waitTool);
+	} catch (error) {
+		if (isDuplicateToolConflict(error)) {
+			return;
+		}
+
+		throw error;
+	}
 
 	pi.on("session_start", async (_event, ctx) => {
 		reconstructStateFromBranch(ctx);

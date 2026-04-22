@@ -19,9 +19,22 @@ Public tools:
 - `type_text`
 - `wait`
 
+`screenshot` includes compact AX targets when available, and `click` can use either an AX ref like `@e1` or screenshot coordinates. AX refs are preferred whenever a suitable target is listed, and images are attached only when semantic AX targeting is insufficient or too ambiguous.
+
 Default mode has built-in screenshot/vision grounding and uses AX-first actions with compatibility fallback when semantic AX control is not enough.
 
 ## Release notes
+
+### v0.1.3
+
+- Added compact AX target refs in tool results and direct semantic targeting through `click({ ref: "@eN" })`
+- Switched to semantic-first turn updates with image attachment fallback only when AX coverage is weak or ambiguous
+- Added an official contributor benchmark in `benchmarks/` with saved baselines, regression checks, and explicit goals
+- Improved AX extraction quality and reduced end-to-end latency substantially in benchmarked flows
+- Current benchmark goals pass with observed results including:
+  - `axOnlyRatio = 1.0`
+  - `avgLatencyMs = 404`
+  - `avgTargetingLatencyMs = 378`
 
 ### v0.1.2
 
@@ -63,6 +76,14 @@ pi install -l /absolute/path/to/pi-computer-use
 ```
 
 This follows the standard Pi package install flow used by other Pi packages.
+
+### Local development without duplicate loads
+
+If you already have `pi-computer-use` installed globally or locally through `pi install`, running a checkout directly with `pi -e .` can load both copies at once. For local development, either remove the installed copy first or disable extension discovery for that run:
+
+```bash
+pi --no-extensions -e .
+```
 
 ## What happens after install
 
@@ -114,7 +135,7 @@ Grant both permissions to the helper at:
 - When an isolated browser window is created, focus is restored to the user's original window immediately afterward
 - During the brief restore/switch phase, input is temporarily suppressed to prevent accidental input in the wrong window
 - In strict AX mode, isolated browser-window bootstrap is blocked because it is not AX-only; open a dedicated browser window first
-- Successful actions return a fresh screenshot for the next step
+- Successful actions return the latest semantic state for the next step; images are attached only when semantic AX targeting is insufficient or too ambiguous
 - The helper uses a non-intrusive strategy where possible instead of taking over your cursor globally
 - Accessibility is mandatory for practical use: actions depend on it
 - Screen Recording is mandatory for screenshots and model vision context
@@ -123,6 +144,18 @@ Grant both permissions to the helper at:
 - Opt-in stealth mode blocks fallback paths and keeps actions on AX-only semantic paths
 - Tool results include execution metadata so we can verify whether an action used AX or a fallback path
 - Stealth mode remains on the current desktop/session only: no second screen or virtual display, no foreground activation, and no physical cursor takeover
+
+## Official QA benchmark
+
+Use the official benchmark harness in `benchmarks/` before claiming semantic-targeting, fallback, or latency improvements.
+
+```bash
+npm run benchmark:qa
+# or for wider app coverage
+npm run benchmark:qa:full
+```
+
+See `benchmarks/README.md` for baseline comparison and regression checking.
 
 ## Build the helper manually
 

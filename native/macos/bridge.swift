@@ -312,6 +312,12 @@ final class Bridge {
 			return try axFindFocusableElement(request)
 		case "axFindActionableElement":
 			return try axFindActionableElement(request)
+		case "axListTargets":
+			return try axListTargets(request)
+		case "axPressElement":
+			return try axPressElement(request)
+		case "axFocusElement":
+			return try axFocusElement(request)
 		case "axFocusAtPoint":
 			return try axFocusAtPoint(request)
 		case "focusedElement":
@@ -750,6 +756,115 @@ final class Bridge {
 		return rankedElementPayload(best: best, ranked: ranked, key: "found")
 	}
 
+	private func axListTargets(_ request: [String: Any]) throws -> [String: Any] {
+		let pid = Int32(try intArg(request, "pid"))
+		let windowId = optionalIntArg(request, "windowId").map { UInt32($0) }
+		let limit = max(1, min(50, optionalIntArg(request, "limit") ?? 12))
+		guard let window = windowElement(pid: pid, windowId: windowId) else {
+			return ["targets": []]
+		}
+		let textRoles: Set<String> = [
+			"AXTextField", "AXTextArea", "AXTextView", "AXSearchField", "AXComboBox", "AXEditableText", "AXSecureTextField",
+		]
+		let structuralRoles: Set<String> = [
+			"AXApplication", "AXWindow", "AXToolbar", "AXGroup", "AXScrollArea", "AXSplitGroup", "AXLayoutArea", "AXTabGroup", "AXWebArea",
+		]
+		let browserBundleIds: Set<String> = [
+			"com.apple.Safari", "com.google.Chrome", "org.chromium.Chromium", "company.thebrowser.Browser", "com.brave.Browser", "com.microsoft.edgemac", "com.vivaldi.Vivaldi", "net.imput.helium", "org.mozilla.firefox",
+		]
+		let windowFrame = frameForWindow(window)
+		let windowArea = max(1.0, windowFrame.width * windowFrame.height)
+		let isBrowser = browserBundleIds.contains(NSRunningApplication(processIdentifier: pid)?.bundleIdentifier ?? "")
+		let elements = collectDescendants(startingAt: window, maxDepth: isBrowser ? 10 : 8)
+		var bestByKey: [String: (AXUIElement, Double)] = [:]
+		for candidate in elements {
+			let role = self.stringAttribute(candidate, attribute: kAXRoleAttribute as CFString) ?? ""
+			let subrole = self.stringAttribute(candidate, attribute: kAXSubroleAttribute as CFString) ?? ""
+			let title = self.stringAttribute(candidate, attribute: kAXTitleAttribute as CFString) ?? ""
+			let description = self.stringAttribute(candidate, attribute: kAXDescriptionAttribute as CFString) ?? ""
+			let value = self.stringAttribute(candidate, attribute: kAXValueAttribute as CFString) ?? ""
+			let actions = self.actionNames(candidate)
+			var focusedSettable = DarwinBoolean(false)
+			let focusStatus = AXUIElementIsAttributeSettable(candidate, kAXFocusedAttribute as CFString, &focusedSettable)
+			let canFocus = focusStatus == .success && focusedSettable.boolValue
+			var valueSettable = DarwinBoolean(false)
+			let valueStatus = AXUIElementIsAttributeSettable(candidate, kAXValueAttribute as CFString, &valueSettable)
+			let canSetValue = valueStatus == .success && valueSettable.boolValue
+			let isText = textRoles.contains(role) || canSetValue
+			let canPress = actions.contains(kAXPressAction as String)
+			guard isText || canPress || canFocus else { continue }
+			guard let frame = self.frameForElement(candidate), frame.width > 10, frame.height > 10 else { continue }
+			let area = frame.width * frame.height
+			let label = [title, description, value].first(where: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) ?? ""
+			let normalizedLabel = label.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+			if structuralRoles.contains(role) {
+				if normalizedLabel.isEmpty { continue }
+				if role == "AXWebArea" && !isBrowser { continue }
+			}
+			if role == "AXTextArea" || role == "AXTextView" {
+				if area > windowArea * 0.55 && !canSetValue { continue }
+			}
+			if role == "AXButton" && normalizedLabel.isEmpty && !isBrowser { continue }
+			if isBrowser && (role == "AXButton" || role == "AXLink" || role == "AXPopUpButton") && normalizedLabel.isEmpty { continue }
+			if actions == [kAXShowMenuAction as String] && !isText { continue }
+			var score = 0.0
+			if isText {
+				score += self.scoreTextInputElement(candidate, role: role)
+			}
+			if canFocus || canPress {
+				score += self.scoreFocusableElement(candidate, role: role, canFocus: canFocus, canPress: canPress, preferredRoles: Set<String>())
+			}
+			if !actions.isEmpty {
+				score += self.scoreActionableElement(candidate, role: role, actions: actions, preferredRoles: Set<String>())
+			}
+			if !normalizedLabel.isEmpty { score += 55 } else { score -= 120 }
+			if !description.isEmpty { score += 18 }
+			if structuralRoles.contains(role) { score -= 180 }
+			if area > windowArea * 0.7 && role != "AXTextField" && role != "AXSearchField" { score -= 180 }
+			if isBrowser && (role == "AXTextField" || role == "AXSearchField") { score += 100 }
+			if isBrowser && role == "AXLink" { score += 35 }
+			if subrole == "AXCloseButton" { score -= 140 }
+			if normalizedLabel == "close tab" { score -= 180 }
+			if normalizedLabel.count > 160 { score -= 80 }
+			if score < 120 { continue }
+			let key = "\(role)|\(normalizedLabel)|\(Int(frame.midX / 24))|\(Int(frame.midY / 24))"
+			if let existing = bestByKey[key], existing.1 >= score { continue }
+			bestByKey[key] = (candidate, score)
+		}
+		let ranked = bestByKey.values.sorted { $0.1 > $1.1 }
+		return ["targets": Array(ranked.prefix(limit)).map { self.elementPayload(element: $0.0, key: "target", score: $0.1) }]
+	}
+
+	private func axPressElement(_ request: [String: Any]) throws -> [String: Any] {
+		let elementRef = try stringArg(request, "elementRef")
+		guard let targetPid = optionalIntArg(request, "pid").map({ Int32($0) }) else {
+			throw BridgeFailure(message: "axPressElement requires pid in non-intrusive mode", code: "pid_required")
+		}
+		guard let element = refStore.element(for: elementRef) else {
+			return ["pressed": false, "reason": "element_ref_invalid"]
+		}
+		let result = performActionOrAncestor(startingAt: element, action: kAXPressAction as CFString, targetPid: targetPid)
+		var output: [String: Any] = ["pressed": result["performed"] as? Bool ?? false]
+		if let reason = result["reason"] as? String {
+			output["reason"] = reason
+		}
+		if let ownerPid = result["ownerPid"] {
+			output["ownerPid"] = ownerPid
+		}
+		return output
+	}
+
+	private func axFocusElement(_ request: [String: Any]) throws -> [String: Any] {
+		let elementRef = try stringArg(request, "elementRef")
+		guard let targetPid = optionalIntArg(request, "pid").map({ Int32($0) }) else {
+			throw BridgeFailure(message: "axFocusElement requires pid in non-intrusive mode", code: "pid_required")
+		}
+		guard let element = refStore.element(for: elementRef) else {
+			return ["focused": false, "reason": "element_ref_invalid"]
+		}
+		return focusElementOrAncestor(startingAt: element, targetPid: targetPid)
+	}
+
 	private func axFocusAtPoint(_ request: [String: Any]) throws -> [String: Any] {
 		let windowId = UInt32(try intArg(request, "windowId"))
 		let x = try doubleArg(request, "x")
@@ -1028,11 +1143,13 @@ final class Bridge {
 		let role = stringAttribute(element, attribute: kAXRoleAttribute as CFString) ?? ""
 		let subrole = stringAttribute(element, attribute: kAXSubroleAttribute as CFString) ?? ""
 		let title = stringAttribute(element, attribute: kAXTitleAttribute as CFString) ?? ""
+		let description = stringAttribute(element, attribute: kAXDescriptionAttribute as CFString) ?? ""
 		let value = stringAttribute(element, attribute: kAXValueAttribute as CFString) ?? ""
 		var summary: [String: Any] = [
 			"role": role,
 			"subrole": subrole,
 			"title": title,
+			"description": description,
 			"value": value,
 			"score": score,
 			"actions": actionNames(element),
@@ -1047,6 +1164,7 @@ final class Bridge {
 		let role = stringAttribute(element, attribute: kAXRoleAttribute as CFString) ?? ""
 		let subrole = stringAttribute(element, attribute: kAXSubroleAttribute as CFString) ?? ""
 		let title = stringAttribute(element, attribute: kAXTitleAttribute as CFString) ?? ""
+		let description = stringAttribute(element, attribute: kAXDescriptionAttribute as CFString) ?? ""
 		let value = stringAttribute(element, attribute: kAXValueAttribute as CFString) ?? ""
 		let frame = frameForElement(element)
 		let centerX = frame.map { $0.midX } ?? 0
@@ -1057,6 +1175,7 @@ final class Bridge {
 			"role": role,
 			"subrole": subrole,
 			"title": title,
+			"description": description,
 			"value": value,
 			"actions": actionNames(element),
 			"x": centerX,

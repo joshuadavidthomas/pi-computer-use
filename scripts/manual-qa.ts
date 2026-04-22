@@ -79,13 +79,15 @@ function assert(cond: any, message: string): void {
 	}
 }
 
-function ensureImageResult(name: string, result: any): { captureId: string; width: number; height: number; app: string } {
+function ensureImageResult(name: string, result: any): { captureId: string; width: number; height: number; app: string; hasImage: boolean } {
 	assert(Array.isArray(result?.content), `${name}: missing content array`);
 	const textPart = result.content.find((item: any) => item?.type === "text");
 	const imagePart = result.content.find((item: any) => item?.type === "image");
 	assert(textPart?.text && typeof textPart.text === "string", `${name}: missing text summary`);
-	assert(imagePart?.data && typeof imagePart.data === "string", `${name}: missing image attachment`);
-	assert(imagePart?.mimeType === "image/png", `${name}: image mimeType is not image/png`);
+	if (imagePart) {
+		assert(imagePart?.data && typeof imagePart.data === "string", `${name}: invalid image attachment`);
+		assert(imagePart?.mimeType === "image/png", `${name}: image mimeType is not image/png`);
+	}
 
 	const details = result?.details;
 	assert(details && typeof details === "object", `${name}: missing details`);
@@ -100,6 +102,7 @@ function ensureImageResult(name: string, result: any): { captureId: string; widt
 		width: details.capture.width,
 		height: details.capture.height,
 		app: details.target.app,
+		hasImage: Boolean(imagePart),
 	};
 }
 
@@ -111,6 +114,20 @@ function ensureAxExecution(name: string, result: any, allowedStrategies?: string
 	if (allowedStrategies && allowedStrategies.length > 0) {
 		assert(allowedStrategies.includes(String(execution.strategy)), `${name}: unexpected execution strategy '${execution.strategy}'`);
 	}
+}
+
+function axTargets(details: any): any[] {
+	return Array.isArray(details?.axTargets) ? details.axTargets : [];
+}
+
+function pickAxTarget(details: any, roles?: string[]): any {
+	const targets = axTargets(details);
+	assert(targets.length > 0, "No AX targets returned on screenshot details");
+	if (roles && roles.length > 0) {
+		const match = targets.find((target) => roles.includes(String(target?.role ?? "")));
+		if (match) return match;
+	}
+	return targets[0];
 }
 
 function getUserContext(): any {
@@ -595,6 +612,23 @@ async function main() {
 		await sleep(250);
 		userFrontmostApp = getFrontmostAppName();
 		baselineMouse = getMousePosition();
+		const refTarget = pickAxTarget(latestDetails, ["AXTextField", "AXSearchField", "AXButton", "AXLink"]);
+		const refClickResult = await executeClick(
+			"qa-click-ref",
+			{ ref: refTarget.ref, captureId: latestCaptureId },
+			undefined,
+			undefined,
+			ctx,
+		);
+		const refClickNorm = ensureImageResult("click by ref", refClickResult);
+		ensureAxExecution("click by ref", refClickResult, ["ax_press", "ax_focus"]);
+		const oldCaptureId = latestCaptureId;
+		latestCaptureId = refClickNorm.captureId;
+		latestWidth = refClickNorm.width;
+		latestHeight = refClickNorm.height;
+		latestDetails = refClickResult.details;
+		await assertUserContextPreserved("click by ref", userFrontmostApp, baselineMouse);
+
 		let clickTarget = { x: centerX(), y: centerY() };
 		try {
 			const target = axFindFocusable(latestDetails);
@@ -609,7 +643,6 @@ async function main() {
 			ctx,
 		);
 		const clickNorm = ensureImageResult("click", clickResult);
-		const oldCaptureId = latestCaptureId;
 		latestCaptureId = clickNorm.captureId;
 		latestWidth = clickNorm.width;
 		latestHeight = clickNorm.height;
@@ -645,7 +678,7 @@ async function main() {
 		latestDetails = noCaptureResult.details;
 		await assertUserContextPreserved("click(no captureId)", userFrontmostApp, baselineMouse);
 
-		pass("Click action + capture refresh", "click, stale-capture validation, click(no captureId)");
+		pass("Click action + capture refresh", `click(ref=${String(refTarget.ref)}), click, stale-capture validation, click(no captureId)`);
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		if (/AX click\/focus could not be completed/i.test(message)) {
@@ -665,7 +698,7 @@ async function main() {
 		latestWidth = waitNorm.width;
 		latestHeight = waitNorm.height;
 		latestDetails = waitResult.details;
-		pass("Wait action", "wait() returned fresh screenshot");
+		pass("Wait action", `wait() returned semantic state${waitNorm.hasImage ? " with image fallback" : " without image fallback"}`);
 	} catch (error) {
 		fail("Wait action", error);
 	}
