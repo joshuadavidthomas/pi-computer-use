@@ -23,7 +23,7 @@ Codex-style computer use for Pi on macOS with AX-first semantic targeting, seman
 
 ### Install
 
-Preferred install methods:
+The package is published on npm as `@injaneity/pi-computer-use`.
 
 #### Pi
 
@@ -82,5 +82,7 @@ node scripts/build-native.mjs --output ~/.pi/agent/helpers/pi-computer-use/bridg
 ### Remove
 
 ```bash
-pi remove git:github.com/injaneity/pi-computer-use
+pi remove @injaneity/pi-computer-use
+# or if installed from a git tag
+pi remove git:github.com/injaneity/pi-computer-use#v0.1.3
 ```
