@@ -15,7 +15,7 @@ import {
 	executeWait,
 	reconstructStateFromBranch,
 	stopBridge,
-} from "../src/bridge.js";
+} from "../src/bridge.ts";
 
 const screenshotTool = defineTool({
 	name: "screenshot",
