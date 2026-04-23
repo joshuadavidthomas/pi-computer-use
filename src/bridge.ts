@@ -1262,17 +1262,25 @@ async function resolveCurrentTarget(signal?: AbortSignal): Promise<ResolvedTarge
 		throw new Error(CURRENT_TARGET_GONE_ERROR);
 	}
 
-	let match = windows.find((window) => window.windowId !== undefined && window.windowId === current.windowId);
+	const hadStableWindowId = current.windowId > 0;
+	const titleQuery = normalizeText(current.windowTitle);
+	let match = hadStableWindowId ? windows.find((window) => window.windowId !== undefined && window.windowId === current.windowId) : undefined;
 	if (!match) {
-		const titleQuery = normalizeText(current.windowTitle);
-		const exactTitleMatches = windows.filter((window) => normalizeText(window.title) === titleQuery);
+		const exactTitleMatches = titleQuery && titleQuery !== "(untitled)" ? windows.filter((window) => normalizeText(window.title) === titleQuery) : [];
 		if (exactTitleMatches.length === 1) {
 			match = exactTitleMatches[0];
+		} else if (exactTitleMatches.length > 1) {
+			match = chooseRankedWindowOrUndefined(exactTitleMatches);
+			if (!match) {
+				throw new Error(
+					`${CURRENT_TARGET_GONE_ERROR} Multiple windows now match '${current.windowTitle}': ${summarizeWindowCandidates(exactTitleMatches)}.`,
+				);
+			}
 		}
 	}
 
-	if (!match) {
-		match = windows.find((window) => window.isFocused) ?? windows.find((window) => window.isMain) ?? windows[0];
+	if (!match && !hadStableWindowId) {
+		match = chooseRankedWindowOrUndefined(windows);
 	}
 
 	if (!match) {
