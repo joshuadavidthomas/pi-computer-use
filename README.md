@@ -1,10 +1,29 @@
-> Latest release: **v0.1.3** — added semantic AX target refs via `click({ ref: "@eN" })`, switched to semantic-first turn updates with image fallback only when needed, added an official benchmark harness in `benchmarks/`, and improved benchmarked performance from `axOnlyRatio 0.5 → 1.0` (**+100%**) and `avgLatencyMs 11194 → 404` (**-10790ms / -96.4%**).
-
 # pi-computer-use
 
 ![pi-computer-use](./assets/img.jpg)
 
 Codex-style computer use for Pi on macOS with AX-first semantic targeting, semantic state updates, and image fallback when semantic coverage is weak.
+
+## Latest Release
+
+[**v0.1.4**](https://github.com/injaneity/pi-computer-use/releases/tag/v0.1.4) focuses on installability, action coverage, and measurable AX-first behavior.
+
+| Channel | Version | Install path |
+| --- | --- | --- |
+| GitHub release | `v0.1.4` | `pi install git:github.com/injaneity/pi-computer-use#v0.1.4` |
+| npm | `0.1.4` | `npm install @injaneity/pi-computer-use@0.1.4` |
+
+| Area | What changed |
+| --- | --- |
+| Packaging | Added arm64 helper packaging, stable helper signing identity support, and prebuilt macOS helpers for npm/GitHub installs. |
+| Actions | Unlocked `double_click`, `move_mouse`, `drag`, `scroll`, `keypress`, `set_text`, and `computer_actions`. |
+| Batching | `computer_actions` now returns one semantic state update plus per-action execution metadata. |
+| QA | Expanded manual QA and benchmarks to cover raw primitives, AX text replacement, and batched flows separately. |
+
+Benchmark snapshot for `v0.1.4`:
+- Executed benchmark coverage increased from `12/12` to `20/20` passing cases.
+- AX-first metrics stayed at `1.0`: `axOnlyRatio`, `axExecutionRatio`, and `targetingAxOnlyRatio`.
+- New primitive and batch coverage both pass at `1.0`: `primitivePassRatio` and `batchPassRatio`.
 
 > For setup, development, benchmarks, and contribution workflow, see [CONTRIBUTING.md](./CONTRIBUTING.md).
 
@@ -30,9 +49,9 @@ The package is published on npm as `@injaneity/pi-computer-use`.
 #### Pi
 
 ```bash
-pi install git:github.com/injaneity/pi-computer-use#v0.1.3
+pi install git:github.com/injaneity/pi-computer-use#v0.1.4
 # project-local
-pi install -l git:github.com/injaneity/pi-computer-use#v0.1.3
+pi install -l git:github.com/injaneity/pi-computer-use#v0.1.4
 # local checkout
 pi install /absolute/path/to/pi-computer-use
 ```
@@ -42,7 +61,7 @@ pi install /absolute/path/to/pi-computer-use
 ```bash
 npm install @injaneity/pi-computer-use
 # pinned version
-npm install @injaneity/pi-computer-use@0.1.3
+npm install @injaneity/pi-computer-use@0.1.4
 ```
 
 Use the GitHub release tag for `pi install`. Use npm when you want the package directly through the npm registry.
@@ -107,7 +126,7 @@ Unsigned or ad-hoc signed helpers can work for local development, but macOS trea
 ### Remove
 
 ```bash
-pi remove git:github.com/injaneity/pi-computer-use#v0.1.3
+pi remove git:github.com/injaneity/pi-computer-use#v0.1.4
 # or remove the npm package from a JS project
 npm remove @injaneity/pi-computer-use
 ```
