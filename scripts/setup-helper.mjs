@@ -15,6 +15,11 @@ const helperSourcePath = path.join(rootDir, "native", "macos", "bridge.swift");
 const args = new Set(process.argv.slice(2));
 const isPostinstall = args.has("--postinstall");
 const allowBuildFallback = args.has("--allow-build") || args.has("--runtime") || process.env.PI_COMPUTER_USE_ALLOW_BUILD === "1";
+const archTargets = {
+	arm64: "arm64-apple-macosx14.0",
+	x64: "x86_64-apple-macosx14.0",
+};
+const defaultCodeSignIdentifier = "com.injaneity.pi-computer-use.bridge";
 
 function normalizeArch(arch) {
 	if (arch === "arm64" || arch === "x64") return arch;
@@ -80,7 +85,22 @@ async function run(command, commandArgs) {
 	});
 }
 
-async function buildHelper(outputPath) {
+function moduleCachePath(arch) {
+	return path.join(os.tmpdir(), `pi-computer-use-swift-module-cache-${arch}`);
+}
+
+async function signHelper(outputPath) {
+	if (process.env.PI_COMPUTER_USE_NO_SIGN === "1") {
+		return;
+	}
+
+	const identity = process.env.PI_COMPUTER_USE_CODESIGN_IDENTITY ?? "-";
+	const identifier = process.env.PI_COMPUTER_USE_CODESIGN_IDENTIFIER ?? defaultCodeSignIdentifier;
+	const commandArgs = ["--force", "-i", identifier, "--timestamp=none", "--sign", identity, outputPath];
+	await run("codesign", commandArgs);
+}
+
+async function buildHelper(arch, outputPath) {
 	if (!(await exists(helperSourcePath))) {
 		throw new Error(`Native helper source not found at ${helperSourcePath}`);
 	}
@@ -88,6 +108,10 @@ async function buildHelper(outputPath) {
 	await fs.mkdir(path.dirname(outputPath), { recursive: true });
 	const swiftArgs = [
 		"swiftc",
+		"-target",
+		archTargets[arch],
+		"-module-cache-path",
+		moduleCachePath(arch),
 		"-O",
 		"-framework",
 		"ApplicationServices",
@@ -104,6 +128,7 @@ async function buildHelper(outputPath) {
 
 	await run("xcrun", swiftArgs);
 	await fs.chmod(outputPath, 0o755);
+	await signHelper(outputPath);
 }
 
 async function setup() {
@@ -136,7 +161,7 @@ async function setup() {
 
 	if (allowBuildFallback) {
 		console.log("[pi-computer-use] prebuilt helper missing; attempting source build with xcrun swiftc...");
-		await buildHelper(helperDestPath);
+		await buildHelper(arch, helperDestPath);
 		console.log(`[pi-computer-use] built helper at ${helperDestPath}`);
 		return;
 	}

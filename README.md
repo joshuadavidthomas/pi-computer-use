@@ -83,9 +83,24 @@ If you need to build the helper manually:
 
 ```bash
 node scripts/build-native.mjs
+# build both release prebuilts
+node scripts/build-native.mjs --arch all
 # or build directly to the installed helper path
 node scripts/build-native.mjs --output ~/.pi/agent/helpers/pi-computer-use/bridge
 ```
+
+Local helper builds are ad-hoc codesigned by default. For a release build with a stable Apple Developer identity, use a Developer ID Application certificate:
+
+```bash
+node scripts/build-native.mjs --arch all \
+  --sign-identity "Developer ID Application: Your Team (TEAMID)" \
+  --hardened-runtime \
+  --timestamp
+```
+
+The helper is signed with the stable identifier `com.injaneity.pi-computer-use.bridge` by default. You can override it with `--sign-identifier` or `PI_COMPUTER_USE_CODESIGN_IDENTIFIER`, but release builds should keep it stable so macOS permissions remain tied to the same helper identity across updates.
+
+Unsigned or ad-hoc signed helpers can work for local development, but macOS treats them as local binaries. Developer ID signing gives the helper a trusted publisher identity, enables notarization, reduces Gatekeeper/TCC friction, and makes permission prompts easier for users to trust. It does not remove the need for the user to grant Screen Recording and Accessibility.
 
 ### Remove
 
