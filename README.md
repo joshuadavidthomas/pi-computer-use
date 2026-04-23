@@ -6,24 +6,26 @@ Codex-style computer use for Pi on macOS with AX-first semantic targeting, seman
 
 ## Latest Release
 
-[**v0.1.4**](https://github.com/injaneity/pi-computer-use/releases/tag/v0.1.4) focuses on installability, action coverage, and measurable AX-first behavior.
+[**v0.1.5**](https://github.com/injaneity/pi-computer-use/releases/tag/v0.1.5) focuses on runtime correctness, package importability, and safer window-targeted input.
 
 | Channel | Version | Install path |
 | --- | --- | --- |
-| GitHub release | `v0.1.4` | `pi install git:github.com/injaneity/pi-computer-use#v0.1.4` |
-| npm | `0.1.4` | `npm install @injaneity/pi-computer-use@0.1.4` |
+| GitHub release | `v0.1.5` | `pi install git:github.com/injaneity/pi-computer-use#v0.1.5` |
+| npm | `0.1.5` | `npm install @injaneity/pi-computer-use@0.1.5` |
 
 | Area | What changed |
 | --- | --- |
-| Packaging | Added arm64 helper packaging, stable helper signing identity support, and prebuilt macOS helpers for npm/GitHub installs. |
-| Actions | Unlocked `double_click`, `move_mouse`, `drag`, `scroll`, `keypress`, `set_text`, and `computer_actions`. |
-| Batching | `computer_actions` now returns one semantic state update plus per-action execution metadata. |
-| QA | Expanded manual QA and benchmarks to cover raw primitives, AX text replacement, and batched flows separately. |
+| Packaging | Fixed the packaged extension import path so shipped source resolves cleanly. |
+| Permissions | Removed stale generated permission code so runtime permission prompts use one source of truth. |
+| Capture | Refreshed fallback image result metadata after screenshot recovery. |
+| Targeting | Prevented controlled-window drift when the original target window can no longer be matched. |
+| Input | Bound text and key actions to the controlled window before delivering input. |
 
-Benchmark snapshot for `v0.1.4`:
-- Executed benchmark coverage increased from `12/12` to `20/20` passing cases.
-- AX-first metrics stayed at `1.0`: `axOnlyRatio`, `axExecutionRatio`, and `targetingAxOnlyRatio`.
-- New primitive and batch coverage both pass at `1.0`: `primitivePassRatio` and `batchPassRatio`.
+Validation snapshot for `v0.1.5`:
+- Manual action QA: `PASS=6 FAIL=0 SKIP=5`.
+- Benchmark: `executed=19 passed=19 failed=0 skipped=15`.
+- AX-first targeting stayed clean: `axExecutionRatio=1.0` and `targetingAxOnlyRatio=1.0`.
+- Primitive and batch coverage both pass at `1.0`.
 
 > For setup, development, benchmarks, and contribution workflow, see [CONTRIBUTING.md](./CONTRIBUTING.md).
 
@@ -49,9 +51,9 @@ The package is published on npm as `@injaneity/pi-computer-use`.
 #### Pi
 
 ```bash
-pi install git:github.com/injaneity/pi-computer-use#v0.1.4
+pi install git:github.com/injaneity/pi-computer-use#v0.1.5
 # project-local
-pi install -l git:github.com/injaneity/pi-computer-use#v0.1.4
+pi install -l git:github.com/injaneity/pi-computer-use#v0.1.5
 # local checkout
 pi install /absolute/path/to/pi-computer-use
 ```
@@ -61,7 +63,7 @@ pi install /absolute/path/to/pi-computer-use
 ```bash
 npm install @injaneity/pi-computer-use
 # pinned version
-npm install @injaneity/pi-computer-use@0.1.4
+npm install @injaneity/pi-computer-use@0.1.5
 ```
 
 Use the GitHub release tag for `pi install`. Use npm when you want the package directly through the npm registry.
@@ -126,7 +128,7 @@ Unsigned or ad-hoc signed helpers can work for local development, but macOS trea
 ### Remove
 
 ```bash
-pi remove git:github.com/injaneity/pi-computer-use#v0.1.4
+pi remove git:github.com/injaneity/pi-computer-use#v0.1.5
 # or remove the npm package from a JS project
 npm remove @injaneity/pi-computer-use
 ```
