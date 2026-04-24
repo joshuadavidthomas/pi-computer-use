@@ -312,6 +312,7 @@ interface RuntimeState {
 	currentTarget?: CurrentTarget;
 	currentCapture?: CurrentCapture;
 	currentAxTargets?: AxTarget[];
+	allowNextTypeTextAxReplacement?: boolean;
 	helper?: ChildProcessWithoutNullStreams;
 	helperStdoutBuffer: string;
 	pending: Map<string, PendingRequest>;
@@ -416,6 +417,7 @@ const runtimeState: RuntimeState = {
 	queueTail: Promise.resolve(),
 	lastPermissionCheckAt: 0,
 	helperInstallChecked: false,
+	allowNextTypeTextAxReplacement: false,
 };
 
 class HelperTransportError extends Error {
@@ -1963,6 +1965,14 @@ async function dispatchClick(
 }
 
 async function dispatchTypeText(text: string, target: ResolvedTarget, signal?: AbortSignal): Promise<ExecutionTrace> {
+	if (runtimeState.allowNextTypeTextAxReplacement) {
+		runtimeState.allowNextTypeTextAxReplacement = false;
+		const focusedElementRef = await focusedTextElementRef(target, signal);
+		if (focusedElementRef) {
+			await setAxValue(focusedElementRef, text, signal);
+			return executionTrace("ax_set_value", "stealth", { axAttempted: true, axSucceeded: true, fallbackUsed: false });
+		}
+	}
 	if (isStrictAxMode()) {
 		strictModeBlock("Raw text insertion is not AX-only. Use set_text for AX value replacement.");
 	}
@@ -2085,6 +2095,30 @@ async function dispatchSetText(params: SetTextParams, target: ResolvedTarget, si
 	});
 }
 
+function isCommandL(keys: string[]): boolean {
+	return keys.length === 1 && /^(cmd|command|meta)\+l$/i.test(keys[0].replace(/\s+/g, ""));
+}
+
+async function focusBrowserAddressField(keys: string[], target: ResolvedTarget, signal?: AbortSignal): Promise<boolean> {
+	if (!isCommandL(keys) || !isBrowserApp(target.appName, target.bundleId)) return false;
+	const refreshed = parseAxTargets(
+		await bridgeCommand(
+			"axListTargets",
+			{ pid: target.pid, windowId: target.windowId, limit: 50 },
+			{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
+		).catch(() => []),
+	);
+	if (!refreshed.length) return false;
+	runtimeState.currentAxTargets = refreshed;
+	const field = refreshed
+		.filter((candidate) => candidate.canFocus && candidate.isTextInput && (candidate.role === "AXTextField" || candidate.role === "AXSearchField"))
+		.sort((a, b) => a.y - b.y || a.x - b.x)[0];
+	if (!field) return false;
+	const focused = await focusAxElement(field.elementRef, target, signal);
+	if (focused) runtimeState.allowNextTypeTextAxReplacement = true;
+	return focused;
+}
+
 function semanticActionsForKeys(keys: string[]): string[] {
 	if (keys.length !== 1) return [];
 	const key = keys[0].trim().toLowerCase();
@@ -2166,6 +2200,11 @@ async function dispatchKeypress(params: KeypressParams, target: ResolvedTarget, 
 	const keys = normalizeKeyList(params.keys);
 	if (keys.length === 0) {
 		throw new Error("keypress.keys must contain at least one key.");
+	}
+
+	const focusedAddressViaAX = await focusBrowserAddressField(keys, target, signal);
+	if (focusedAddressViaAX) {
+		return executionTrace("ax_focus", "stealth", { axAttempted: true, axSucceeded: true, fallbackUsed: false });
 	}
 
 	const performedViaAX = await tryFocusedAxKeyAction(keys, target, signal);
