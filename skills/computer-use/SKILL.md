@@ -13,7 +13,7 @@ Use these tools when shell/file tools are not enough and you need to operate a m
 2. If the latest screenshot includes AX target refs, use those first for `click`. Use coordinates from the **latest screenshot** only when no suitable AX target is available.
 3. To switch apps/windows, call `screenshot(app, windowTitle)` again.
 4. For text input, prefer `set_text({ ref: "@eN", text })` when the screenshot exposes a matching AX text target. Use click + `type_text({ text })` when you need insertion/cursor semantics.
-5. Use `keypress({ keys })` for Enter, Tab, Escape, arrows, deletion, and shortcuts.
+5. Use `keypress({ keys })` for Enter, Tab, Escape, arrows, deletion, and shortcuts. Enter/Escape/Space try semantic AX actions first when possible.
 6. Use `computer_actions({ actions })` to batch obvious actions like click + type + Enter when no intermediate screenshot is needed.
 7. Every successful action returns the **latest semantic state**. If AX targets are missing, sparse, or ambiguous, an image is attached for vision fallback.
 
@@ -26,8 +26,8 @@ Use these tools when shell/file tools are not enough and you need to operate a m
 - Coordinates are **window-relative screenshot pixels** (top-left origin).
 - `captureId` is optional. If provided and stale, refresh with `screenshot`.
 - `type_text` inserts text at the current cursor/selection. Use `set_text` when you need to replace an AX text value; prefer a ref over relying on focus.
-- `scroll`, `move_mouse`, `drag`, `double_click`, and coordinate clicks use screenshot-relative coordinates from the latest screenshot.
-- For shortcut sequences, use chord strings like `keypress({ keys: ["Command+L", "Enter"] })`; reserve `["Command", "L"]` for a single chord call.
+- `scroll` can use an AX ref marked `scroll` or screenshot-relative coordinates from the latest screenshot; refs are preferred in stealth mode. `move_mouse`, `drag`, `double_click`, and coordinate clicks use screenshot-relative coordinates from the latest screenshot.
+- For shortcut sequences, use chord strings like `keypress({ keys: ["Command+L", "Enter"] })`; reserve `["Command", "L"]` for a single chord call. In stealth mode, only keypresses with safe AX equivalents, such as focused Enter/Escape/Space actions, can run.
 - `computer_actions` executes one to twenty actions and returns one state update plus per-action execution metadata, including whether each action used the `stealth` or `default` implementation variant. Do not batch if the next action depends on seeing an intermediate result.
 - `wait({ ms })` pauses and then returns the latest semantic state for polling/loading states.
 - Accessibility permission is mandatory for actions.

@@ -326,10 +326,16 @@ final class Bridge {
 			return try axListTargets(request)
 		case "axPressElement":
 			return try axPressElement(request)
+		case "axPerformActionElement":
+			return try axPerformActionElement(request)
 		case "axFocusElement":
 			return try axFocusElement(request)
 		case "axFocusAtPoint":
 			return try axFocusAtPoint(request)
+		case "axScrollElement":
+			return try axScrollElement(request)
+		case "axScrollAtPoint":
+			return try axScrollAtPoint(request)
 		case "focusedElement":
 			return try focusedElement(request)
 		case "setValue":
@@ -897,13 +903,14 @@ final class Bridge {
 			let canSetValue = valueStatus == .success && valueSettable.boolValue
 			let isText = textRoles.contains(role) || canSetValue
 			let canPress = actions.contains(kAXPressAction as String)
-			guard isText || canPress || canFocus else { continue }
+			let canScroll = self.supportsAnyScrollAction(candidate)
+			guard isText || canPress || canFocus || canScroll else { continue }
 			guard let frame = self.frameForElement(candidate), frame.width > 10, frame.height > 10 else { continue }
 			let area = frame.width * frame.height
 			let label = [title, description, value].first(where: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) ?? ""
 			let normalizedLabel = label.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
 			if structuralRoles.contains(role) {
-				if normalizedLabel.isEmpty { continue }
+				if normalizedLabel.isEmpty && !canScroll { continue }
 				if role == "AXWebArea" && !isBrowser { continue }
 			}
 			if role == "AXTextArea" || role == "AXTextView" {
@@ -924,12 +931,14 @@ final class Bridge {
 			if canFocus || canPress {
 				score += self.scoreFocusableElement(candidate, role: role, canFocus: canFocus, canPress: canPress, preferredRoles: Set<String>())
 			}
+			if canScroll { score += 130 }
 			if !actions.isEmpty {
 				score += self.scoreActionableElement(candidate, role: role, actions: actions, preferredRoles: Set<String>())
 			}
-			if !normalizedLabel.isEmpty { score += 55 } else { score -= 120 }
+			if !normalizedLabel.isEmpty { score += 55 } else if canScroll { score -= 20 } else { score -= 120 }
 			if !description.isEmpty { score += 18 }
-			if structuralRoles.contains(role) { score -= 180 }
+			if structuralRoles.contains(role) { score -= canScroll ? 40 : 180 }
+			if canScroll && role == "AXScrollArea" { score += 180 }
 			if area > windowArea * 0.7 && role != "AXTextField" && role != "AXSearchField" { score -= 180 }
 			if isBrowser && (role == "AXTextField" || role == "AXSearchField") { score += 100 }
 			if isBrowser && role == "AXLink" { score += 35 }
@@ -964,6 +973,18 @@ final class Bridge {
 		return output
 	}
 
+	private func axPerformActionElement(_ request: [String: Any]) throws -> [String: Any] {
+		let elementRef = try stringArg(request, "elementRef")
+		let action = try axActionName(try stringArg(request, "action"))
+		guard let targetPid = optionalIntArg(request, "pid").map({ Int32($0) }) else {
+			throw BridgeFailure(message: "axPerformActionElement requires pid in non-intrusive mode", code: "pid_required")
+		}
+		guard let element = refStore.element(for: elementRef) else {
+			return ["performed": false, "reason": "element_ref_invalid"]
+		}
+		return performActionOrAncestor(startingAt: element, action: action, targetPid: targetPid)
+	}
+
 	private func axFocusElement(_ request: [String: Any]) throws -> [String: Any] {
 		let elementRef = try stringArg(request, "elementRef")
 		guard let targetPid = optionalIntArg(request, "pid").map({ Int32($0) }) else {
@@ -993,6 +1014,33 @@ final class Bridge {
 		return focusElementOrAncestor(startingAt: hitElement, targetPid: targetPid)
 	}
 
+	private func axScrollElement(_ request: [String: Any]) throws -> [String: Any] {
+		let elementRef = try stringArg(request, "elementRef")
+		guard let targetPid = optionalIntArg(request, "pid").map({ Int32($0) }) else {
+			throw BridgeFailure(message: "axScrollElement requires pid in non-intrusive mode", code: "pid_required")
+		}
+		guard let element = refStore.element(for: elementRef) else {
+			return ["scrolled": false, "reason": "element_ref_invalid"]
+		}
+		return performScrollActionOrAncestor(startingAt: element, targetPid: targetPid, scrollX: optionalIntArg(request, "scrollX") ?? 0, scrollY: optionalIntArg(request, "scrollY") ?? 0, steps: max(1, min(8, optionalIntArg(request, "steps") ?? 1)))
+	}
+
+	private func axScrollAtPoint(_ request: [String: Any]) throws -> [String: Any] {
+		let windowId = UInt32(try intArg(request, "windowId"))
+		let x = try doubleArg(request, "x")
+		let y = try doubleArg(request, "y")
+		guard let targetPid = optionalIntArg(request, "pid").map({ Int32($0) }) else {
+			throw BridgeFailure(message: "axScrollAtPoint requires pid in non-intrusive mode", code: "pid_required")
+		}
+		let captureWidth = max(1.0, (try? doubleArg(request, "captureWidth")) ?? 1.0)
+		let captureHeight = max(1.0, (try? doubleArg(request, "captureHeight")) ?? 1.0)
+		let point = try mapWindowPoint(windowId: windowId, x: x, y: y, captureWidth: captureWidth, captureHeight: captureHeight)
+		guard let hitElement = hitTestElement(at: point) else {
+			return ["scrolled": false, "reason": "hit_test_failed"]
+		}
+		return performScrollActionOrAncestor(startingAt: hitElement, targetPid: targetPid, scrollX: optionalIntArg(request, "scrollX") ?? 0, scrollY: optionalIntArg(request, "scrollY") ?? 0, steps: max(1, min(8, optionalIntArg(request, "steps") ?? 1)))
+	}
+
 	private func hitTestElement(at point: CGPoint) -> AXUIElement? {
 		let systemWide = AXUIElementCreateSystemWide()
 		var hitElement: AXUIElement?
@@ -1020,6 +1068,50 @@ final class Bridge {
 		default:
 			throw BridgeFailure(message: "Unsupported AX action '\(actionName)'", code: "invalid_args")
 		}
+	}
+
+	private let axScrollDownAction = "AXScrollDown" as CFString
+	private let axScrollUpAction = "AXScrollUp" as CFString
+	private let axScrollLeftAction = "AXScrollLeft" as CFString
+	private let axScrollRightAction = "AXScrollRight" as CFString
+
+	private func scrollActionNames(scrollX: Int, scrollY: Int) -> [CFString] {
+		var actions: [CFString] = []
+		if scrollY > 0 { actions.append(axScrollDownAction) }
+		if scrollY < 0 { actions.append(axScrollUpAction) }
+		if scrollX > 0 { actions.append(axScrollRightAction) }
+		if scrollX < 0 { actions.append(axScrollLeftAction) }
+		return actions
+	}
+
+	private func supportsAnyScrollAction(_ element: AXUIElement) -> Bool {
+		let actions = Set(actionNames(element))
+		return actions.contains(axScrollDownAction as String) || actions.contains(axScrollUpAction as String) || actions.contains(axScrollLeftAction as String) || actions.contains(axScrollRightAction as String)
+	}
+
+	private func performScrollActionOrAncestor(startingAt element: AXUIElement, targetPid: Int32, scrollX: Int, scrollY: Int, steps: Int) -> [String: Any] {
+		let actions = scrollActionNames(scrollX: scrollX, scrollY: scrollY)
+		guard !actions.isEmpty else { return ["scrolled": false, "reason": "zero_delta"] }
+		var current: AXUIElement? = element
+		var depth = 0
+
+		while let candidate = current, depth < 10 {
+			if let pid = pidForElement(candidate), pid != targetPid {
+				return ["scrolled": false, "reason": "pid_mismatch", "ownerPid": Int(pid)]
+			}
+			var didScroll = false
+			for _ in 0..<steps {
+				for action in actions where supportsAction(candidate, action: action) {
+					let status = AXUIElementPerformAction(candidate, action)
+					if status == .success { didScroll = true }
+				}
+			}
+			if didScroll { return ["scrolled": true] }
+			current = parentElement(candidate)
+			depth += 1
+		}
+
+		return ["scrolled": false, "reason": "no_scroll_action"]
 	}
 
 	private func performActionOrAncestor(startingAt element: AXUIElement, action: CFString, targetPid: Int32) -> [String: Any] {
@@ -1301,6 +1393,7 @@ final class Bridge {
 			"canSetValue": canSetValue,
 			"canFocus": focusedStatus == .success && focusedSettable.boolValue,
 			"canPress": actions.contains(kAXPressAction as String),
+			"canScroll": supportsAnyScrollAction(element),
 			"x": centerX,
 			"y": centerY,
 		]

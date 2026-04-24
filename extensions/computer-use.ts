@@ -143,8 +143,9 @@ const scrollTool = defineTool({
 	],
 	executionMode: "sequential",
 	parameters: Type.Object({
-		x: Type.Number({ description: "X coordinate in screenshot pixels" }),
-		y: Type.Number({ description: "Y coordinate in screenshot pixels" }),
+		x: Type.Optional(Type.Number({ description: "X coordinate in screenshot pixels" })),
+		y: Type.Optional(Type.Number({ description: "Y coordinate in screenshot pixels" })),
+		ref: Type.Optional(Type.String({ description: "Optional AX scroll target ref from the latest screenshot, e.g. @e1" })),
 		scrollX: Type.Optional(Type.Number({ description: "Horizontal scroll delta in pixels" })),
 		scrollY: Type.Optional(Type.Number({ description: "Vertical scroll delta in pixels" })),
 		captureId: Type.Optional(Type.String({ description: "Optional screenshot validation id" })),
@@ -267,8 +268,9 @@ const batchedActionSchema = Type.Union([
 	}),
 	Type.Object({
 		type: Type.Literal("scroll"),
-		x: Type.Number(),
-		y: Type.Number(),
+		x: Type.Optional(Type.Number()),
+		y: Type.Optional(Type.Number()),
+		ref: Type.Optional(Type.String()),
 		scrollX: Type.Optional(Type.Number()),
 		scrollY: Type.Optional(Type.Number()),
 		captureId: Type.Optional(Type.String()),

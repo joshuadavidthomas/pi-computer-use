@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AgentToolResult, AgentToolUpdateCallback, ExtensionContext } from "@mariozechner/pi-coding-agent";
-import { getComputerUseConfig, isBrowserUseEnabled, isStrictAxMode } from "./config.ts";
+import { getComputerUseConfig, isBrowserUseEnabled, isStrictAxMode, loadComputerUseConfig } from "./config.ts";
 import { ensurePermissions, type PermissionStatus } from "./permissions.ts";
 
 export interface ScreenshotParams {
@@ -37,8 +37,9 @@ export interface KeypressParams {
 }
 
 export interface ScrollParams {
-	x: number;
-	y: number;
+	x?: number;
+	y?: number;
+	ref?: string;
 	scrollX?: number;
 	scrollY?: number;
 	captureId?: string;
@@ -111,6 +112,8 @@ interface ExecutionTrace {
 		| "coordinate_event_move"
 		| "coordinate_event_drag"
 		| "coordinate_event_scroll"
+		| "ax_scroll"
+		| "ax_action"
 		| "ax_set_value"
 		| "raw_keypress"
 		| "raw_key_text";
@@ -288,6 +291,7 @@ interface AxTarget {
 	canSetValue: boolean;
 	canFocus: boolean;
 	canPress: boolean;
+	canScroll: boolean;
 	x: number;
 	y: number;
 	score?: number;
@@ -622,6 +626,7 @@ function parseAxTargets(result: unknown): AxTarget[] {
 				canSetValue: toBoolean(target?.canSetValue),
 				canFocus: toBoolean(target?.canFocus),
 				canPress: toBoolean(target?.canPress),
+				canScroll: toBoolean(target?.canScroll),
 				x: toFiniteNumber(target?.x, 0),
 				y: toFiniteNumber(target?.y, 0),
 				score: Number.isFinite(target?.score) ? Number(target.score) : undefined,
@@ -636,6 +641,7 @@ function formatAxTargetLabel(target: AxTarget): string {
 		target.canSetValue ? "setValue" : undefined,
 		target.canPress ? "press" : undefined,
 		target.canFocus ? "focus" : undefined,
+		target.canScroll ? "scroll" : undefined,
 	].filter((item): item is string => Boolean(item));
 	return `${target.ref} ${target.role}${target.subrole ? `/${target.subrole}` : ""} ${JSON.stringify(label)}${capabilities.length ? ` [${capabilities.join(",")}]` : ""}`;
 }
@@ -949,6 +955,8 @@ async function checkPermissions(signal?: AbortSignal): Promise<PermissionStatus>
 }
 
 async function ensureReady(ctx: ExtensionContext, signal?: AbortSignal): Promise<void> {
+	loadComputerUseConfig(ctx.cwd);
+
 	if (process.platform !== "darwin") {
 		throw new Error(NON_MACOS_ERROR);
 	}
@@ -1943,11 +1951,10 @@ async function dispatchSetText(params: SetTextParams, target: ResolvedTarget, si
 			const focusedElementRef = await focusedTextElementRef(target, signal);
 			if (focusedElementRef) {
 				await setAxValue(focusedElementRef, params.text, signal);
-				return executionTrace("ax_set_value", "default", {
+				return executionTrace("ax_set_value", "stealth", {
 					axAttempted: true,
 					axSucceeded: true,
-					fallbackUsed: true,
-					nonStealthReason: "set_text_ref_requires_focus_fallback",
+					fallbackUsed: false,
 				});
 			}
 		}
@@ -1977,22 +1984,109 @@ async function dispatchSetText(params: SetTextParams, target: ResolvedTarget, si
 	});
 }
 
-async function dispatchKeypress(params: KeypressParams, target: ResolvedTarget, signal?: AbortSignal): Promise<ExecutionTrace> {
-	if (isStrictAxMode()) {
-		strictModeBlock("Keypress is not AX-only.");
+function semanticActionsForKeys(keys: string[]): string[] {
+	if (keys.length !== 1) return [];
+	const key = keys[0].trim().toLowerCase();
+	if (["enter", "return"].includes(key)) return ["confirm", "press"];
+	if (["escape", "esc"].includes(key)) return ["cancel"];
+	if (["space", "spacebar", " "].includes(key)) return ["press"];
+	return [];
+}
+
+async function tryFocusedAxKeyAction(keys: string[], target: ResolvedTarget, signal?: AbortSignal): Promise<boolean> {
+	const actions = semanticActionsForKeys(keys);
+	if (!actions.length) return false;
+	const focused = await focusedTextElementRef(target, signal);
+	if (!focused) {
+		const rawFocused = await bridgeCommand<FocusedElementResult>(
+			"focusedElement",
+			{ pid: target.pid, windowId: target.windowId },
+			{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
+		).catch(() => undefined);
+		if (!rawFocused?.exists || !rawFocused.elementRef) return false;
+		for (const action of actions) {
+			const result = await bridgeCommand<{ performed?: boolean }>(
+				"axPerformActionElement",
+				{ elementRef: rawFocused.elementRef, pid: target.pid, action },
+				{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
+			).catch(() => undefined);
+			if (toBoolean(result?.performed)) return true;
+		}
+		return false;
 	}
+	for (const action of actions) {
+		const result = await bridgeCommand<{ performed?: boolean }>(
+			"axPerformActionElement",
+			{ elementRef: focused, pid: target.pid, action },
+			{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
+		).catch(() => undefined);
+		if (toBoolean(result?.performed)) return true;
+	}
+	return false;
+}
+
+async function dispatchKeypress(params: KeypressParams, target: ResolvedTarget, signal?: AbortSignal): Promise<ExecutionTrace> {
 	const keys = normalizeKeyList(params.keys);
 	if (keys.length === 0) {
 		throw new Error("keypress.keys must contain at least one key.");
 	}
+
+	const performedViaAX = await tryFocusedAxKeyAction(keys, target, signal);
+	if (performedViaAX) {
+		return executionTrace("ax_action", "stealth", { axAttempted: true, axSucceeded: true, fallbackUsed: false });
+	}
+
+	if (isStrictAxMode()) {
+		strictModeBlock("Keypress is not AX-only and no semantic AX equivalent was available.");
+	}
 	await focusControlledWindow(target, signal);
 	await bridgeCommand("keyPress", { keys, pid: target.pid }, { signal, timeoutMs: COMMAND_TIMEOUT_MS });
 	return executionTrace("raw_keypress", "default", {
-		axAttempted: false,
+		axAttempted: semanticActionsForKeys(keys).length > 0,
 		axSucceeded: false,
-		fallbackUsed: false,
+		fallbackUsed: semanticActionsForKeys(keys).length > 0,
 		nonStealthReason: "keypress_requires_keyboard_focus",
 	});
+}
+
+function scrollStepCount(delta: number): number {
+	return Math.max(1, Math.min(8, Math.ceil(Math.abs(delta) / 500)));
+}
+
+async function tryAxScrollElement(elementRef: string, target: ResolvedTarget, scrollX: number, scrollY: number, signal?: AbortSignal): Promise<boolean> {
+	const result = await bridgeCommand<{ scrolled?: boolean }>(
+		"axScrollElement",
+		{ elementRef, pid: target.pid, scrollX, scrollY, steps: Math.max(scrollStepCount(scrollX), scrollStepCount(scrollY)) },
+		{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
+	).catch(() => undefined);
+	return toBoolean(result?.scrolled);
+}
+
+async function tryAxScrollAtPoint(
+	target: ResolvedTarget,
+	capture: CurrentCapture,
+	x: number,
+	y: number,
+	scrollX: number,
+	scrollY: number,
+	signal?: AbortSignal,
+): Promise<boolean> {
+	const result = await bridgeCommand<{ scrolled?: boolean }>(
+		"axScrollAtPoint",
+		{
+			windowId: target.windowId,
+			pid: target.pid,
+			x,
+			y,
+			scrollX,
+			scrollY,
+			steps: Math.max(scrollStepCount(scrollX), scrollStepCount(scrollY)),
+			captureWidth: capture.width,
+			captureHeight: capture.height,
+		},
+		{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
+	).catch(() => undefined);
+	return toBoolean(result?.scrolled);
 }
 
 async function dispatchScroll(
@@ -2001,17 +2095,37 @@ async function dispatchScroll(
 	target: ResolvedTarget,
 	signal?: AbortSignal,
 ): Promise<ExecutionTrace> {
-	if (isStrictAxMode()) {
-		strictModeBlock("Scroll is not AX-only.");
-	}
+	const ref = trimOrUndefined(params.ref);
 	const x = toFiniteNumber(params.x, NaN);
 	const y = toFiniteNumber(params.y, NaN);
-	ensurePointIsInCapture(x, y, capture);
 	const scrollX = normalizeScrollDelta(params.scrollX);
 	const scrollY = normalizeScrollDelta(params.scrollY);
 	if (scrollX === 0 && scrollY === 0) {
 		throw new Error("scroll requires a non-zero scrollX or scrollY.");
 	}
+
+	let scrolledViaAX = false;
+	if (ref) {
+		const axTarget = axTargetByRef(ref);
+		scrolledViaAX = await tryAxScrollElement(axTarget.elementRef, target, scrollX, scrollY, signal);
+	} else if (Number.isFinite(x) && Number.isFinite(y)) {
+		ensurePointIsInCapture(x, y, capture);
+		scrolledViaAX = await tryAxScrollAtPoint(target, capture, x, y, scrollX, scrollY, signal);
+	} else {
+		throw new Error("scroll requires either ref or both x and y.");
+	}
+
+	if (scrolledViaAX) {
+		return executionTrace("ax_scroll", "stealth", { axAttempted: true, axSucceeded: true, fallbackUsed: false });
+	}
+
+	if (isStrictAxMode()) {
+		strictModeBlock(ref ? `AX scroll could not be completed for ${ref}.` : `AX scroll could not be completed at (${Math.round(x)},${Math.round(y)}).`);
+	}
+	if (!Number.isFinite(x) || !Number.isFinite(y)) {
+		throw new Error("Coordinate scroll fallback requires x and y. Provide coordinates from the latest screenshot or use stealth-compatible AX scroll target.");
+	}
+	ensurePointIsInCapture(x, y, capture);
 	await bridgeCommand(
 		"scrollWheel",
 		{
@@ -2027,9 +2141,9 @@ async function dispatchScroll(
 		{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
 	);
 	return executionTrace("coordinate_event_scroll", "default", {
-		axAttempted: false,
+		axAttempted: true,
 		axSucceeded: false,
-		fallbackUsed: false,
+		fallbackUsed: true,
 		nonStealthReason: "coordinate_scroll_requires_pointer_event",
 	});
 }
@@ -2220,13 +2334,18 @@ async function performKeypress(params: KeypressParams, signal?: AbortSignal): Pr
 
 async function performScroll(params: ScrollParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails>> {
 	const capture = validateCaptureId(params.captureId);
+	const ref = trimOrUndefined(params.ref);
+	const x = toFiniteNumber(params.x, NaN);
+	const y = toFiniteNumber(params.y, NaN);
 	return await runCoordinateAction(
 		"scroll",
 		capture,
 		signal,
 		async (target) => await dispatchScroll(params, capture, target, signal),
 		(target) =>
-			`Scrolled at (${Math.round(params.x)},${Math.round(params.y)}) in ${target.appName} — ${target.windowTitle}. Returned the latest semantic window state.`,
+			ref
+				? `Scrolled ${ref} in ${target.appName} — ${target.windowTitle}. Returned the latest semantic window state.`
+				: `Scrolled at (${Math.round(x)},${Math.round(y)}) in ${target.appName} — ${target.windowTitle}. Returned the latest semantic window state.`,
 	);
 }
 
