@@ -31,10 +31,10 @@ Validation snapshot for `v0.1.6`:
 
 - Public tools: `screenshot`, `click`, `double_click`, `move_mouse`, `drag`, `scroll`, `keypress`, `type_text`, `set_text`, `wait`, `computer_actions`
 - AX target refs in tool results, e.g. `@e1`, with capabilities like `canSetValue`, `canPress`, and `canFocus`
-- Ref-first actions such as `click({ ref: "@eN" })` and `set_text({ ref: "@eN", text })` before coordinate/focus fallbacks
+- Ref-first actions such as `click({ ref: "@eN" })`, `scroll({ ref: "@eN" })`, and `set_text({ ref: "@eN", text })` before coordinate/focus fallbacks
 - Batched actions via `computer_actions`, returning one post-action semantic state update plus per-action execution metadata
 - Execution metadata reports the selected implementation variant: `stealth` for background-safe AX paths, `default` for focus/raw-event fallbacks
-- Full pointer/keyboard primitive coverage for common GUI flows: click, double-click, move, drag, scroll, keypress, text insert, and AX text replacement
+- Full pointer/keyboard primitive coverage for common GUI flows, with AX-first equivalents where available: click, double-click, scroll, semantic keypresses, move, drag, text insert, and AX text replacement
 - Semantic-first turn updates with image attachment fallback only when needed
 - AX-first execution with optional strict AX-only mode via `PI_COMPUTER_USE_STEALTH=1` or `PI_COMPUTER_USE_STRICT_AX=1`
 - Stealth mode is the widest safe subset: AX/background-safe operations run, while foreground focus, raw keyboard/pointer events, and cursor takeover are blocked
