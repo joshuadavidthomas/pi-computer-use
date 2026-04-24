@@ -39,6 +39,7 @@ Validation snapshot for `v0.1.6`:
 - AX-first execution with optional strict AX-only mode via `PI_COMPUTER_USE_STEALTH=1` or `PI_COMPUTER_USE_STRICT_AX=1`
 - Stealth mode is the widest safe subset: AX/background-safe operations run, while foreground focus, raw keyboard/pointer events, and cursor takeover are blocked
 - Browser-aware targeting, including isolated browser window preference when appropriate
+- User-visible config for browser control and stealth/strict AX execution
 - Non-intrusive helper behavior where possible instead of global cursor takeover
 - Official benchmark harness in `benchmarks/` with baseline comparison and regression checks
 
@@ -81,6 +82,34 @@ Grant both permissions to the helper at:
 Required permissions:
 - Accessibility
 - Screen Recording
+
+### Computer-use config
+
+Optional JSON config files make browser control and stealth/strict AX mode visible and project-overridable:
+
+```text
+~/.pi/agent/extensions/pi-computer-use.json  # global
+.pi/computer-use.json                        # project-local override
+```
+
+Example:
+
+```json
+{
+  "browser_use": true,
+  "stealth_mode": false
+}
+```
+
+Defaults preserve existing behavior: browser use is enabled, and stealth mode is disabled. Set `browser_use` to `false` to refuse screenshots/actions against known browser apps. Set `stealth_mode` to `true` to require background-safe Accessibility paths and block foreground/raw pointer or keyboard fallbacks.
+
+Environment overrides:
+
+- `PI_COMPUTER_USE_BROWSER_USE=0|1`
+- `PI_COMPUTER_USE_STEALTH_MODE=0|1`
+- `PI_COMPUTER_USE_STEALTH=1` or `PI_COMPUTER_USE_STRICT_AX=1` force stealth mode on
+
+Run `/computer-use` in Pi to show the effective config and config sources.
 
 ### Local development
 

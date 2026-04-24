@@ -16,6 +16,7 @@ import {
 	reconstructStateFromBranch,
 	stopBridge,
 } from "../src/bridge.ts";
+import { getLoadedComputerUseConfig, loadComputerUseConfig } from "../src/config.ts";
 
 const screenshotTool = defineTool({
 	name: "screenshot",
@@ -312,6 +313,25 @@ const computerActionsTool = defineTool({
 	},
 });
 
+function formatConfigStatus(): string {
+	const loaded = getLoadedComputerUseConfig();
+	const lines = [
+		"pi-computer-use config",
+		"",
+		`browser_use: ${loaded.config.browser_use ? "enabled" : "disabled"}`,
+		`stealth_mode: ${loaded.config.stealth_mode ? "enabled" : "disabled"}`,
+		"",
+		"Sources:",
+	];
+	for (const source of loaded.sources) {
+		const status = source.error ? `error: ${source.error}` : source.exists ? "loaded" : "not found";
+		lines.push(`- ${source.path}: ${status}`);
+	}
+	const envKeys = Object.keys(loaded.env);
+	lines.push(`- env overrides: ${envKeys.length ? envKeys.join(", ") : "none"}`);
+	return lines.join("\n");
+}
+
 function isDuplicateToolConflict(error: unknown): boolean {
 	if (!(error instanceof Error)) {
 		return false;
@@ -341,7 +361,16 @@ export default function computerUseExtension(pi: ExtensionAPI): void {
 		throw error;
 	}
 
+	pi.registerCommand("computer-use", {
+		description: "Show pi-computer-use configuration",
+		handler: async (_args, ctx) => {
+			loadComputerUseConfig(ctx.cwd);
+			ctx.ui.notify(formatConfigStatus(), "info");
+		},
+	});
+
 	pi.on("session_start", async (_event, ctx) => {
+		loadComputerUseConfig(ctx.cwd);
 		reconstructStateFromBranch(ctx);
 
 		if (!ctx.hasUI) {
@@ -357,6 +386,7 @@ export default function computerUseExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_tree", async (_event, ctx) => {
+		loadComputerUseConfig(ctx.cwd);
 		reconstructStateFromBranch(ctx);
 	});
 

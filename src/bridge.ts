@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AgentToolResult, AgentToolUpdateCallback, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import { getComputerUseConfig, isBrowserUseEnabled, isStrictAxMode } from "./config.ts";
 import { ensurePermissions, type PermissionStatus } from "./permissions.ts";
 
 export interface ScreenshotParams {
@@ -159,6 +160,10 @@ export interface ComputerUseDetails {
 	axTargets?: AxTarget[];
 	activation: ActivationFlags;
 	execution: ExecutionTrace;
+	config?: {
+		browser_use: boolean;
+		stealth_mode: boolean;
+	};
 }
 
 interface HelperApp {
@@ -334,7 +339,6 @@ const BATCH_MAX_ACTIONS = 20;
 const DEFAULT_WAIT_MS = 1_000;
 
 const RECOVERABLE_SCREENSHOT_ERROR_CODES = new Set(["screenshot_timeout", "window_not_found"]);
-const STRICT_AX_MODE = process.env.PI_COMPUTER_USE_STEALTH === "1" || process.env.PI_COMPUTER_USE_STRICT_AX === "1";
 const BROWSER_BUNDLE_IDS = new Set([
 	"com.apple.Safari",
 	"com.google.Chrome",
@@ -426,7 +430,7 @@ function isRecoverableScreenshotError(error: unknown): error is HelperCommandErr
 }
 
 function currentRuntimeMode(): ExecutionVariant {
-	return STRICT_AX_MODE ? "stealth" : "default";
+	return isStrictAxMode() ? "stealth" : "default";
 }
 
 function executionTrace(
@@ -1076,7 +1080,7 @@ async function restoreUserFocus(target: FrontmostResult, signal?: AbortSignal): 
 		{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
 	).catch(() => undefined);
 
-	if (STRICT_AX_MODE || toBoolean(restoreResult?.windowRestored) || toBoolean(restoreResult?.appRestored)) {
+	if (isStrictAxMode() || toBoolean(restoreResult?.windowRestored) || toBoolean(restoreResult?.appRestored)) {
 		return;
 	}
 
@@ -1101,6 +1105,14 @@ async function focusControlledWindow(target: ResolvedTarget, signal?: AbortSigna
 
 function isBrowserApp(appName: string, bundleId?: string): boolean {
 	return BROWSER_BUNDLE_IDS.has(bundleId ?? "") || BROWSER_APP_NAMES.has(normalizeText(appName));
+}
+
+function assertBrowserUseAllowed(target: { appName: string; bundleId?: string }): void {
+	if (!isBrowserUseEnabled() && isBrowserApp(target.appName, target.bundleId)) {
+		throw new Error(
+			`Browser use is disabled by pi-computer-use config, so '${target.appName}' cannot be controlled. Enable browser_use in ~/.pi/agent/extensions/pi-computer-use.json or .pi/computer-use.json to allow browser windows.`,
+		);
+	}
 }
 
 function windowIdentity(window: HelperWindow): string {
@@ -1171,7 +1183,7 @@ async function openIsolatedBrowserWindow(app: HelperApp, signal?: AbortSignal): 
 	if (!script) {
 		return undefined;
 	}
-	if (STRICT_AX_MODE) {
+	if (isStrictAxMode()) {
 		strictModeBlock(
 			`Strict AX mode cannot create an isolated browser window for '${app.appName}' because that bootstrap is not AX-only. Open a dedicated browser window first, then call screenshot again.`,
 		);
@@ -1319,6 +1331,7 @@ function toResolvedTarget(app: HelperApp, window: HelperWindow): ResolvedTarget 
 }
 
 function setCurrentTarget(target: ResolvedTarget): void {
+	assertBrowserUseAllowed(target);
 	runtimeState.currentTarget = {
 		appName: target.appName,
 		bundleId: target.bundleId,
@@ -1386,6 +1399,7 @@ async function resolveFrontmostTarget(signal?: AbortSignal): Promise<ResolvedTar
 	}
 
 	if (isBrowserApp(app.appName, app.bundleId)) {
+		assertBrowserUseAllowed(app);
 		const isolated = await openIsolatedBrowserWindow(app, signal);
 		if (isolated) {
 			const resolved = toResolvedTarget(app, isolated);
@@ -1432,6 +1446,7 @@ async function resolveTargetForScreenshot(selection: ScreenshotParams, signal?: 
 
 	if (appQuery) {
 		const app = chooseAppByQuery(apps, appQuery);
+		assertBrowserUseAllowed(app);
 		let windows = await listWindows(app.pid, signal);
 		if (!windows.length) {
 			throw new Error(`No controllable window was found in app '${app.appName}'.`);
@@ -1697,6 +1712,7 @@ async function buildToolResult(
 		axTargets: result.axTargets,
 		activation: result.activation,
 		execution,
+		config: getComputerUseConfig(),
 	};
 	const axTargetText = result.axTargets.length
 		? `\n\nPrefer these AX targets over coordinate clicks or focus-based text replacement when one matches your intent:\n${result.axTargets.map(formatAxTargetLabel).join("\n")}`
@@ -1820,7 +1836,7 @@ async function dispatchClick(
 	}
 
 	if (!clickedViaAX && !focusedViaAX) {
-		if (STRICT_AX_MODE) {
+		if (isStrictAxMode()) {
 			strictModeBlock(`AX click/focus could not be completed at (${Math.round(x)},${Math.round(y)}).`);
 		}
 		await bridgeCommand(
@@ -1853,7 +1869,7 @@ async function dispatchClick(
 }
 
 async function dispatchTypeText(text: string, target: ResolvedTarget, signal?: AbortSignal): Promise<ExecutionTrace> {
-	if (STRICT_AX_MODE) {
+	if (isStrictAxMode()) {
 		strictModeBlock("Raw text insertion is not AX-only. Use set_text for AX value replacement.");
 	}
 	await focusControlledWindow(target, signal);
@@ -1912,13 +1928,13 @@ async function dispatchSetText(params: SetTextParams, target: ResolvedTarget, si
 				await setAxValue(axTarget.elementRef, params.text, signal);
 				return executionTrace("ax_set_value", "stealth", { axAttempted: true, axSucceeded: true, fallbackUsed: false });
 			} catch (error) {
-				if (STRICT_AX_MODE) {
+				if (isStrictAxMode()) {
 					throw normalizeError(error);
 				}
 			}
 		}
 
-		if (STRICT_AX_MODE) {
+		if (isStrictAxMode()) {
 			strictModeBlock(`AX target '${ref}' does not expose a directly settable AX value.`);
 		}
 
@@ -1943,7 +1959,7 @@ async function dispatchSetText(params: SetTextParams, target: ResolvedTarget, si
 		return executionTrace("ax_set_value", "stealth", { axAttempted: true, axSucceeded: true, fallbackUsed: false });
 	}
 
-	if (STRICT_AX_MODE) {
+	if (isStrictAxMode()) {
 		strictModeBlock("set_text in stealth mode requires a text AX ref from the latest screenshot or an already-focused text control.");
 	}
 
@@ -1962,7 +1978,7 @@ async function dispatchSetText(params: SetTextParams, target: ResolvedTarget, si
 }
 
 async function dispatchKeypress(params: KeypressParams, target: ResolvedTarget, signal?: AbortSignal): Promise<ExecutionTrace> {
-	if (STRICT_AX_MODE) {
+	if (isStrictAxMode()) {
 		strictModeBlock("Keypress is not AX-only.");
 	}
 	const keys = normalizeKeyList(params.keys);
@@ -1985,7 +2001,7 @@ async function dispatchScroll(
 	target: ResolvedTarget,
 	signal?: AbortSignal,
 ): Promise<ExecutionTrace> {
-	if (STRICT_AX_MODE) {
+	if (isStrictAxMode()) {
 		strictModeBlock("Scroll is not AX-only.");
 	}
 	const x = toFiniteNumber(params.x, NaN);
@@ -2024,7 +2040,7 @@ async function dispatchMoveMouse(
 	target: ResolvedTarget,
 	signal?: AbortSignal,
 ): Promise<ExecutionTrace> {
-	if (STRICT_AX_MODE) {
+	if (isStrictAxMode()) {
 		strictModeBlock("Mouse movement is not AX-only.");
 	}
 	const x = toFiniteNumber(params.x, NaN);
@@ -2049,7 +2065,7 @@ async function dispatchDrag(
 	target: ResolvedTarget,
 	signal?: AbortSignal,
 ): Promise<ExecutionTrace> {
-	if (STRICT_AX_MODE) {
+	if (isStrictAxMode()) {
 		strictModeBlock("Drag is not AX-only.");
 	}
 	const path = normalizeDragPath(params.path, capture);

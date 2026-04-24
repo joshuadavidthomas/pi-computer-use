@@ -33,6 +33,8 @@ Use these tools when shell/file tools are not enough and you need to operate a m
 - Accessibility permission is mandatory for actions.
 - Screen Recording permission is mandatory for screenshots and model vision context.
 - Public tool surface is `screenshot`, `click`, `double_click`, `move_mouse`, `drag`, `scroll`, `keypress`, `type_text`, `set_text`, `wait`, `computer_actions`.
+- Run `/computer-use` to show effective config. Config files are `~/.pi/agent/extensions/pi-computer-use.json` globally and `.pi/computer-use.json` per project.
+- `browser_use=false` blocks control of known browser apps. `stealth_mode=true` requires background-safe AX execution.
 - Default mode has built-in screenshot/vision grounding and is AX-first with fallback only when a control cannot be completed semantically.
 - Opt-in stealth mode (`PI_COMPUTER_USE_STEALTH=1` or `PI_COMPUTER_USE_STRICT_AX=1`) exposes the widest safe subset: AX/background-safe operations run, but non-AX fallbacks are blocked.
 - In stealth mode, operation must stay background-safe: no second screen or virtual display, no foreground activation, no raw keyboard/pointer events, and no physical cursor takeover.
