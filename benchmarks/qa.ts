@@ -72,6 +72,7 @@ type CaseRecord = {
 	stealthCompatible?: boolean;
 	executionVariant?: string;
 	details?: string;
+	capability?: string;
 };
 
 type BenchmarkSummary = {
@@ -304,6 +305,8 @@ function metrics(records: CaseRecord[]) {
 		["double_click", "move_mouse", "drag", "scroll", "keypress", "type_text"].includes(record.tool),
 	);
 	const batches = executed.filter((record) => record.tool === "computer_actions");
+	const capabilities = records.filter((record) => Boolean(record.capability));
+	const executedCapabilities = capabilities.filter((record) => record.status !== "SKIP");
 	const ratio = (subset: CaseRecord[], predicate: (record: CaseRecord) => boolean) =>
 		subset.length ? Number((subset.filter(predicate).length / subset.length).toFixed(3)) : 0;
 	const avgLatency = (subset: CaseRecord[]) =>
@@ -338,6 +341,10 @@ function metrics(records: CaseRecord[]) {
 		targetingAxOnlyRatio: ratio(targeting, (record) => record.axOnly === true && record.axExecution === true),
 		primitivePassRatio: ratio(primitives, (record) => record.status === "PASS"),
 		batchPassRatio: ratio(batches, (record) => record.status === "PASS"),
+		capabilityTotal: capabilities.length,
+		capabilityExecuted: executedCapabilities.length,
+		capabilityPassRatio: ratio(executedCapabilities, (record) => record.status === "PASS"),
+		capabilityStealthRatio: ratio(executedCapabilities, (record) => record.stealthCompatible === true),
 		avgLatencyMs: avgLatency(executed),
 		avgNavigationLatencyMs: avgLatency(navigation),
 		avgTargetingLatencyMs: avgLatency(targeting),
@@ -363,6 +370,7 @@ async function benchmarkCase(
 	tool: CaseRecord["tool"],
 	app: string | undefined,
 	run: () => Promise<any>,
+	capability?: string,
 ): Promise<{ record: CaseRecord; result?: any }> {
 	const start = performance.now();
 	try {
@@ -384,6 +392,7 @@ async function benchmarkCase(
 				stealthCompatible: summary.stealthCompatible,
 				executionVariant: summary.executionVariant,
 				details: `axTargets=${summary.axTargets} hasImage=${summary.hasImage} axExecution=${summary.axExecution} fallback=${summary.fallbackUsed} variant=${summary.executionVariant} stealthCompatible=${summary.stealthCompatible}`,
+				capability,
 			}),
 			result,
 		};
@@ -397,8 +406,80 @@ async function benchmarkCase(
 				status: "FAIL",
 				latencyMs: Math.round(performance.now() - start),
 				details: error instanceof Error ? error.message : String(error),
+				capability,
 			}),
 		};
+	}
+}
+
+async function runSotaCapabilityCases(item: { app: string; category: string }, details: any, ctx: any, records: CaseRecord[]): Promise<void> {
+	const captureId = details?.capture?.captureId;
+	if (!captureId) return;
+	const point = captureCenter(details);
+
+	const scrollTarget = preferredScrollTarget(details);
+	if (scrollTarget?.ref) {
+		const result = await benchmarkCase(
+			`${item.app}-sota-scroll-ax`,
+			item.category,
+			"scroll",
+			item.app,
+			async () => await executeScroll(`bench-${item.app}-sota-scroll`, { ref: scrollTarget.ref, scrollY: 120, captureId }, undefined, undefined, ctx),
+			"ax_scroll_ref",
+		);
+		records.push(result.record);
+	} else {
+		records.push({ name: `${item.app}-sota-scroll-ax`, category: item.category, tool: "scroll", app: item.app, status: "SKIP", details: "No AX scroll ref available", capability: "ax_scroll_ref" });
+	}
+
+	const adjustTarget = preferredAdjustTarget(details);
+	if (adjustTarget?.ref) {
+		const result = await benchmarkCase(
+			`${item.app}-sota-adjust-ax`,
+			item.category,
+			"drag",
+			item.app,
+			async () => await executeDrag(
+				`bench-${item.app}-sota-adjust`,
+				{
+					ref: adjustTarget.ref,
+					path: [[point.x, point.y], [Math.min(Number(details.capture.width) - 4, point.x + 24), point.y]],
+					captureId,
+				},
+				undefined,
+				undefined,
+				ctx,
+			),
+			"ax_adjust_ref",
+		);
+		records.push(result.record);
+	} else {
+		records.push({ name: `${item.app}-sota-adjust-ax`, category: item.category, tool: "drag", app: item.app, status: "SKIP", details: "No AX adjustable ref available", capability: "ax_adjust_ref" });
+	}
+
+	if (item.category === "browser") {
+		const result = await benchmarkCase(
+			`${item.app}-sota-address-ax`,
+			item.category,
+			"computer_actions",
+			item.app,
+			async () => await executeComputerActions(
+				`bench-${item.app}-sota-address`,
+				{
+					captureId,
+					actions: [
+						{ type: "keypress", keys: ["Command+L"] },
+						{ type: "type_text", text: "about:blank" },
+						{ type: "keypress", keys: ["Enter"] },
+					],
+				},
+				undefined,
+				undefined,
+				ctx,
+			),
+			"browser_address_ax",
+		);
+		records.push(result.record);
 	}
 }
 
@@ -487,6 +568,8 @@ async function main() {
 			records.push(click.record);
 		}
 
+		await runSotaCapabilityCases(item, details, ctx, records);
+
 		if (item.app === "TextEdit" && details?.capture?.captureId) {
 			let currentDetails = details;
 			let point = captureCenter(currentDetails);
@@ -537,36 +620,6 @@ async function main() {
 					records.push({ name: "TextEdit-batch-ax", category: item.category, tool: "computer_actions", app: item.app, status: "SKIP", details: "No AX ref available for strict batch" });
 				}
 
-				const scrollTarget = preferredScrollTarget(currentDetails);
-				if (scrollTarget?.ref) {
-					await runTextEditCase("TextEdit-scroll-ax", "scroll", async () => {
-						return await executeScroll("bench-TextEdit-scroll-ax", { ref: scrollTarget.ref, scrollY: 120, captureId: currentDetails.capture.captureId }, undefined, undefined, ctx);
-					});
-				} else {
-					records.push({ name: "TextEdit-scroll-ax", category: item.category, tool: "scroll", app: item.app, status: "SKIP", details: "No AX scroll ref available" });
-				}
-
-				const adjustTarget = preferredAdjustTarget(currentDetails);
-				if (adjustTarget?.ref) {
-					await runTextEditCase("TextEdit-drag-adjust-ax", "drag", async () => {
-						return await executeDrag(
-							"bench-TextEdit-drag-adjust-ax",
-							{
-								ref: adjustTarget.ref,
-								path: [
-									[point.x, point.y],
-									[Math.min(Number(currentDetails.capture.width) - 4, point.x + 24), point.y],
-								],
-								captureId: currentDetails.capture.captureId,
-							},
-							undefined,
-							undefined,
-							ctx,
-						);
-					});
-				} else {
-					records.push({ name: "TextEdit-drag-adjust-ax", category: item.category, tool: "drag", app: item.app, status: "SKIP", details: "No AX adjustable ref available" });
-				}
 
 				for (const tool of ["double_click", "move_mouse", "keypress", "type_text"] as const) {
 					records.push({ name: `TextEdit-${tool}`, category: item.category, tool, app: item.app, status: "SKIP", details: "Strict AX mode intentionally blocks raw primitive coverage" });
