@@ -1,150 +1,197 @@
 # pi-computer-use
 
-![pi-computer-use](./assets/img.jpg)
+<p align="center">
+  <img src="./assets/logo/logo3.png" width="50%" alt="pi-computer-use">
+</p>
 
-Codex-style computer use for Pi on macOS with AX-first semantic targeting, semantic state updates, and image fallback when semantic coverage is weak.
+<p align="center">
+  <a href="https://www.npmjs.com/package/@injaneity/pi-computer-use"><img alt="npm" src="https://img.shields.io/npm/v/@injaneity/pi-computer-use?style=flat-square"></a>
+  <a href="./LICENSE"><img alt="license" src="https://img.shields.io/github/license/injaneity/pi-computer-use?style=flat-square"></a>
+  <img alt="platform" src="https://img.shields.io/badge/platform-macOS-lightgrey?style=flat-square">
+  <a href="https://github.com/injaneity/pi-computer-use/actions/workflows/ci.yml"><img alt="ci" src="https://img.shields.io/github/actions/workflow/status/injaneity/pi-computer-use/ci.yml?branch=main&style=flat-square"></a>
+</p>
 
-## Latest Release
+Codex-style computer use for [Pi](https://pi.dev/) on macOS.
 
-See the [latest GitHub release](https://github.com/injaneity/pi-computer-use/releases/latest) for the current version, release name, value proposition, changelog, and validation snapshot.
+`pi-computer-use` gives Pi agents a semantic computer-use surface for visible macOS windows. It prefers Accessibility (AX) targets such as `@e1`, returns semantic state after every action, and attaches screenshots only when AX coverage is too weak for reliable operation.
 
-Install:
-- GitHub release: `pi install git:github.com/injaneity/pi-computer-use#v0.2.0`.
-- npm package: `npm install @injaneity/pi-computer-use@0.2.0`.
+## Table of Contents
 
-> For setup, development, benchmarks, and contribution workflow, see [CONTRIBUTING.md](./CONTRIBUTING.md).
+- [Quick Start](#quick-start)
+- [What It Adds to Pi](#what-it-adds-to-pi)
+- [Examples](#examples)
+- [How It Works](#how-it-works)
+- [Documentation](#documentation)
+- [Development & Benchmarks](#development--benchmarks)
+- [Release & Install Notes](#release--install-notes)
+- [License](#license)
+- [See Also](#see-also)
 
-## Features
+## Quick Start
 
-- Public tools: `screenshot`, `click`, `double_click`, `move_mouse`, `drag`, `scroll`, `keypress`, `type_text`, `set_text`, `wait`, `computer_actions`
-- AX target refs in tool results, e.g. `@e1`, with capabilities like `canSetValue`, `canPress`, and `canFocus`
-- Ref-first actions such as `click({ ref: "@eN" })`, `scroll({ ref: "@eN" })`, and `set_text({ ref: "@eN", text })` before coordinate/focus fallbacks
-- Batched actions via `computer_actions`, returning one post-action semantic state update plus per-action execution metadata
-- Execution metadata reports the selected implementation variant: `stealth` for background-safe AX paths, `default` for focus/raw-event fallbacks
-- Full pointer/keyboard primitive coverage for common GUI flows, with AX-first equivalents where available: click, double-click, scroll, semantic keypresses, move, drag, text insert, and AX text replacement
-- Semantic-first turn updates with image attachment fallback only when needed
-- AX-first execution with optional strict AX-only mode via `PI_COMPUTER_USE_STEALTH=1` or `PI_COMPUTER_USE_STRICT_AX=1`
-- Stealth mode is the widest safe subset: AX/background-safe operations run, while foreground focus, raw keyboard/pointer events, and cursor takeover are blocked
-- Browser-aware targeting, including isolated browser window preference when appropriate
-- User-visible config for browser control and stealth/strict AX execution
-- Non-intrusive helper behavior where possible instead of global cursor takeover
-- Official benchmark harness in `benchmarks/` with baseline comparison and regression checks
-
-## Setup
-
-### Install
-
-The package is published on npm as `@injaneity/pi-computer-use`.
-
-#### Pi
+Install the Pi package:
 
 ```bash
 pi install git:github.com/injaneity/pi-computer-use#v0.2.0
-# project-local
-pi install -l git:github.com/injaneity/pi-computer-use#v0.2.0
-# local checkout
-pi install /absolute/path/to/pi-computer-use
 ```
 
-#### npm
-
-```bash
-npm install @injaneity/pi-computer-use
-# pinned version
-npm install @injaneity/pi-computer-use@0.2.0
-```
-
-Use the GitHub release tag for `pi install`. Use npm when you want the package directly through the npm registry.
-
-### First run
-
-Start Pi in interactive mode. On session start, the extension checks whether computer-use is ready and guides you through setup if permissions are missing.
-
-Grant both permissions to the helper at:
+Start Pi in interactive mode. On the first session, grant macOS permissions to:
 
 ```text
 ~/.pi/agent/helpers/pi-computer-use/bridge
 ```
 
 Required permissions:
+
 - Accessibility
 - Screen Recording
 
-### Computer-use config
+Then call `screenshot` first in a Pi session. It selects the controlled window and returns the latest semantic state, including AX refs such as `@e1` when available.
 
-Optional JSON config files make browser control and stealth/strict AX mode visible and project-overridable:
-
-```text
-~/.pi/agent/extensions/pi-computer-use.json  # global
-.pi/computer-use.json                        # project-local override
+```ts
+screenshot({ app: "Safari" })
+click({ ref: "@e1" })
+set_text({ ref: "@e2", text: "hello" })
 ```
 
-Example:
+Use `/computer-use` in Pi to inspect the effective config and config sources.
 
-```json
-{
-  "browser_use": true,
-  "stealth_mode": false
-}
+## What It Adds to Pi
+
+- Public tools: `screenshot`, `click`, `double_click`, `move_mouse`, `drag`, `scroll`, `keypress`, `type_text`, `set_text`, `wait`, `computer_actions`.
+- AX target refs in tool results, with capabilities such as `canSetValue`, `canPress`, `canFocus`, `canScroll`, and `adjust`.
+- Ref-first actions such as `click({ ref: "@eN" })`, `scroll({ ref: "@eN" })`, and `set_text({ ref: "@eN", text })`.
+- Batched actions through `computer_actions`, with one post-action semantic state update plus per-action execution metadata.
+- Execution metadata that reports `stealth` for background-safe AX paths and `default` for focus/raw-event fallbacks.
+- Full pointer and keyboard primitive coverage for common GUI flows, with AX-first equivalents where available.
+- Browser-aware targeting, including isolated browser window preference where appropriate.
+- Optional strict AX mode for background-safe operation without foreground focus, raw pointer events, raw keyboard events, or cursor takeover.
+- Official QA benchmark harness in [`benchmarks/`](./benchmarks/README.md).
+
+## Examples
+
+Prefer AX refs over coordinates when a matching target exists:
+
+```ts
+click({ ref: "@e1" })
+scroll({ ref: "@e3", scrollY: 600 })
 ```
 
-Defaults preserve existing behavior: browser use is enabled, and stealth mode is disabled. Set `browser_use` to `false` to refuse screenshots/actions against known browser apps. Set `stealth_mode` to `true` to require background-safe Accessibility paths and block foreground/raw pointer or keyboard fallbacks.
+Use coordinates from the latest screenshot only when there is no suitable AX target:
 
-Environment overrides:
+```ts
+click({ x: 320, y: 180, captureId: "..." })
+```
 
-- `PI_COMPUTER_USE_BROWSER_USE=0|1`
-- `PI_COMPUTER_USE_STEALTH_MODE=0|1`
-- `PI_COMPUTER_USE_STEALTH=1` or `PI_COMPUTER_USE_STRICT_AX=1` force stealth mode on
+Replace text through AX value semantics:
 
-Run `/computer-use` in Pi to show the effective config and config sources.
+```ts
+set_text({ ref: "@e2", text: "https://example.com" })
+keypress({ keys: ["Enter"] })
+```
 
-### Local development
+Batch obvious actions when no intermediate inspection is needed:
 
-If you want to work on a local checkout:
+```ts
+computer_actions({
+  captureId: "...",
+  actions: [
+    { type: "click", ref: "@e1" },
+    { type: "set_text", ref: "@e2", text: "https://example.com" },
+    { type: "keypress", keys: ["Enter"] }
+  ]
+})
+```
+
+See [docs/usage.md](./docs/usage.md) for the full workflow and tool patterns.
+
+## How It Works
+
+`pi-computer-use` has three pieces:
+
+1. The Pi extension in [`extensions/computer-use.ts`](./extensions/computer-use.ts) registers the public tools and `/computer-use` command.
+2. The TypeScript bridge in [`src/bridge.ts`](./src/bridge.ts) manages the current window, capture IDs, AX refs, fallback policy, batching, and execution metadata.
+3. The native Swift helper in [`native/macos/bridge.swift`](./native/macos/bridge.swift) talks to macOS Accessibility, ScreenCaptureKit, AppKit, and CoreGraphics.
+
+The result is semantic-first GUI control: Pi sees useful AX targets first, falls back to screenshots only when needed, and reports whether each action stayed background-safe.
+
+## Documentation
+
+- [Usage guide](./docs/usage.md): tool workflow, AX refs, text input, browser flows, batching, and strict AX mode.
+- [Configuration](./docs/configuration.md): config files, environment overrides, browser control, and stealth mode.
+- [Development](./docs/development.md): local setup, helper builds, validation, release signing notes, and PR workflow.
+- [Troubleshooting](./docs/troubleshooting.md): permissions, helper setup, stale refs, browser refusal, and strict mode errors.
+- [Benchmarks](./benchmarks/README.md): benchmark commands, metrics, regression policy, and local comparison workflow.
+- [Contributing](./CONTRIBUTING.md): issue-first contribution rules and PR checklist.
+
+## Development & Benchmarks
+
+Install dependencies:
 
 ```bash
 npm install
-# optional: build the helper into the installed helper path
-node scripts/build-native.mjs --output ~/.pi/agent/helpers/pi-computer-use/bridge
 ```
 
-To run the checkout in Pi without loading another installed copy at the same time:
+Run checks:
+
+```bash
+npm test
+```
+
+Run the local checkout in Pi without loading another installed copy:
 
 ```bash
 pi --no-extensions -e .
 ```
 
-For benchmark and contribution workflow, see [CONTRIBUTING.md](./CONTRIBUTING.md) and `benchmarks/README.md`.
-
-### Helper build
-
-If you need to build the helper manually:
+Run the default QA benchmark:
 
 ```bash
-node scripts/build-native.mjs
-# build both release prebuilts
-node scripts/build-native.mjs --arch all
-# or build directly to the installed helper path
-node scripts/build-native.mjs --output ~/.pi/agent/helpers/pi-computer-use/bridge
+npm run benchmark:qa
 ```
 
-Local helper builds are ad-hoc codesigned by default. For a release build with a stable Apple Developer identity, use a Developer ID Application certificate:
+Run the wider benchmark that may open apps:
 
 ```bash
-node scripts/build-native.mjs --arch all \
-  --sign-identity "Developer ID Application: Your Team (TEAMID)" \
-  --hardened-runtime \
-  --timestamp
+npm run benchmark:qa:full
 ```
 
-The helper is signed with the stable identifier `com.injaneity.pi-computer-use.bridge` by default. You can override it with `--sign-identifier` or `PI_COMPUTER_USE_CODESIGN_IDENTIFIER`, but release builds should keep it stable so macOS permissions remain tied to the same helper identity across updates.
+## Release & Install Notes
 
-Unsigned or ad-hoc signed helpers can work for local development, but macOS treats them as local binaries. Developer ID signing gives the helper a trusted publisher identity, enables notarization, reduces Gatekeeper/TCC friction, and makes permission prompts easier for users to trust. It does not remove the need for the user to grant Screen Recording and Accessibility.
+The package is published on npm as `@injaneity/pi-computer-use`.
 
-### Remove
+```bash
+npm install @injaneity/pi-computer-use
+npm install @injaneity/pi-computer-use@0.2.0
+```
+
+Pi installs should pin a GitHub release tag:
+
+```bash
+pi install git:github.com/injaneity/pi-computer-use#v0.2.0
+pi install -l git:github.com/injaneity/pi-computer-use#v0.2.0
+pi install /absolute/path/to/pi-computer-use
+```
+
+Remove:
 
 ```bash
 pi remove git:github.com/injaneity/pi-computer-use#v0.2.0
-# or remove the npm package from a JS project
 npm remove @injaneity/pi-computer-use
 ```
+
+For a different release, replace `v0.2.0` or `0.2.0` with the version you want to pin.
+
+## Screenshots
+
+![pi-computer-use screenshot](./assets/reference/img.jpg)
+
+## License
+
+MIT
+
+## See Also
+
+- [Pi](https://pi.dev/)
+- [`@mariozechner/pi-coding-agent`](https://www.npmjs.com/package/@mariozechner/pi-coding-agent)
+- [`@mariozechner/pi-ai`](https://www.npmjs.com/package/@mariozechner/pi-ai)
