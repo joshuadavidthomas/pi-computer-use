@@ -20,7 +20,6 @@ What changed:
 - Added stealth-compatible coverage to benchmarks while keeping the existing AX-first checks intact.
 
 Validation snapshot for `v0.1.6`:
-- Manual action QA: default `PASS=6 FAIL=0 SKIP=5`; stealth `PASS=4 FAIL=0 SKIP=6`.
 - Benchmark: `executed=20 passed=20 failed=0 skipped=14`.
 - AX-first metrics stayed clean: `axOnlyRatio=1.0`, `axExecutionRatio=1.0`, and `targetingAxOnlyRatio=1.0`.
 - Stealth-compatible execution is now tracked at `0.65`; primitive and batch coverage both pass at `1.0`.
