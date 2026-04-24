@@ -1,12 +1,12 @@
 {
   "goals": {
-    "axOnlyRatio": 0.8,
+    "coreAxOnlyRatio": 0.8,
     "avgLatencyMs": 7500,
     "avgTargetingLatencyMs": 4000
   },
   "regressionTolerance": {
-    "axOnlyRatio": 0.02,
-    "visionFallbackRatio": 0.02,
+    "coreAxOnlyRatio": 0.02,
+    "coreVisionFallbackRatio": 0.02,
     "axExecutionRatio": 0.02,
     "navigationAxOnlyRatio": 0.02,
     "targetingAxOnlyRatio": 0.02,

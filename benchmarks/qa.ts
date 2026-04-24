@@ -120,7 +120,7 @@ function goalStatus(current: ReturnType<typeof metrics>) {
 	const checks = Object.entries(goals).map(([metric, target]) => {
 		const currentValue = Number((current as any)[metric] ?? 0);
 		const goalValue = Number(target ?? 0);
-		const higherIsBetter = metric === "axOnlyRatio";
+		const higherIsBetter = ["axOnlyRatio", "coreAxOnlyRatio", "capabilityPassRatio", "capabilityStealthRatio"].includes(metric);
 		const status = higherIsBetter ? currentValue >= goalValue : currentValue <= goalValue;
 		const details = higherIsBetter ? `expected >= ${goalValue}, got ${currentValue}` : `expected <= ${goalValue}, got ${currentValue}`;
 		return { metric, current: currentValue, target: goalValue, status: (status ? "PASS" : "FAIL") as "PASS" | "FAIL", details };
@@ -130,7 +130,7 @@ function goalStatus(current: ReturnType<typeof metrics>) {
 
 function compareMetrics(current: ReturnType<typeof metrics>, baseline: ReturnType<typeof metrics>) {
 	const config = readJsonFile(CONFIG_PATH)?.regressionTolerance ?? {};
-	const higherIsBetter = new Set(["axOnlyRatio", "axExecutionRatio", "navigationAxOnlyRatio", "targetingAxOnlyRatio"]);
+	const higherIsBetter = new Set(["axOnlyRatio", "coreAxOnlyRatio", "axExecutionRatio", "navigationAxOnlyRatio", "targetingAxOnlyRatio", "capabilityPassRatio", "capabilityStealthRatio"]);
 	const checks = Object.entries(config).map(([metric, tolerance]) => {
 		const currentValue = Number((current as any)[metric] ?? 0);
 		const baselineValue = Number((baseline as any)[metric] ?? 0);
@@ -297,7 +297,9 @@ function captureCenter(details: any): { x: number; y: number } {
 }
 
 function metrics(records: CaseRecord[]) {
+	const coreRecords = records.filter((record) => !record.capability);
 	const executed = records.filter((record) => record.status !== "SKIP");
+	const coreExecuted = coreRecords.filter((record) => record.status !== "SKIP");
 	const passed = executed.filter((record) => record.status === "PASS");
 	const navigation = executed.filter((record) => record.tool === "screenshot" || record.tool === "wait");
 	const targeting = executed.filter((record) => record.tool === "click" || record.tool === "set_text");
@@ -334,7 +336,9 @@ function metrics(records: CaseRecord[]) {
 		failed: executed.filter((record) => record.status === "FAIL").length,
 		skipped: records.filter((record) => record.status === "SKIP").length,
 		axOnlyRatio: ratio(executed, (record) => record.axOnly === true),
+		coreAxOnlyRatio: ratio(coreExecuted, (record) => record.axOnly === true),
 		visionFallbackRatio: ratio(executed, (record) => record.hasImage === true),
+		coreVisionFallbackRatio: ratio(coreExecuted, (record) => record.hasImage === true),
 		axExecutionRatio: ratio(targeting, (record) => record.axExecution === true && record.fallbackUsed !== true),
 		stealthCompatibleRatio: ratio(executed, (record) => record.stealthCompatible === true),
 		navigationAxOnlyRatio: ratio(navigation, (record) => record.axOnly === true),
