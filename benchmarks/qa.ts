@@ -542,6 +542,7 @@ async function main() {
 		if (shot.record.status !== "PASS") continue;
 
 		const details = shot.result?.details;
+		let capabilityDetails = details;
 		const target = preferredAxTarget(details);
 		if (shot.record.hasImage || (shot.record.axTargets ?? 0) < 3) {
 			records.push({
@@ -566,9 +567,10 @@ async function main() {
 				return await executeClick(`bench-${item.app}-click`, { ref: target.ref, captureId: details.capture.captureId }, undefined, undefined, ctx);
 			});
 			records.push(click.record);
+			if (click.record.status === "PASS" && click.result?.details) capabilityDetails = click.result.details;
 		}
 
-		await runSotaCapabilityCases(item, details, ctx, records);
+		await runSotaCapabilityCases(item, capabilityDetails, ctx, records);
 
 		if (item.app === "TextEdit" && details?.capture?.captureId) {
 			let currentDetails = details;
