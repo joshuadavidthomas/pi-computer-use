@@ -12,12 +12,12 @@ Running checklist for usability, speed, reliability, and multi-window/multi-agen
 
 ## Next priorities
 
-- [ ] Generalize `captureId` into a broader `stateId` / `stateToken`.
-- [ ] Improve stale window/ref/capture errors and recovery guidance.
+- [x] Generalize `captureId` into a broader `stateId` / `stateToken`.
+- [x] Improve stale window/ref/capture errors and recovery guidance.
 - [ ] Add per-window write serialization for multi-agent safety.
-- [ ] Add `arrange_window` / `set_window_frame` for deterministic layouts.
-- [ ] Add optional screenshot mode, e.g. `image: "auto" | "always" | "never"`.
-- [ ] Improve action result classification with concise success/failure reasons.
+- [x] Add `arrange_window` / `set_window_frame` for deterministic layouts.
+- [x] Add optional screenshot mode, e.g. `image: "auto" | "always" | "never"`.
+- [x] Improve action result classification with concise success/failure reasons.
 - [ ] Improve scroll target selection and boundary/no-effect reporting.
 
 ## Lower priority / likely not useful now

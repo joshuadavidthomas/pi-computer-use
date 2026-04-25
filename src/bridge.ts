@@ -10,11 +10,19 @@ import { getComputerUseConfig, isBrowserUseEnabled, isStrictAxMode, loadComputer
 import { ensurePermissions, type PermissionStatus } from "./permissions.ts";
 
 type WindowSelector = string | number;
+type ImageMode = "auto" | "always" | "never";
+
+interface StateTargetSnapshot {
+	pid: number;
+	windowId: number;
+	windowRef?: string;
+}
 
 export interface ScreenshotParams {
 	app?: string;
 	windowTitle?: string;
 	window?: WindowSelector;
+	image?: ImageMode;
 }
 
 export interface ListWindowsParams {
@@ -25,6 +33,8 @@ export interface ListWindowsParams {
 
 interface WindowTargetParams {
 	window?: WindowSelector;
+	stateId?: string;
+	image?: ImageMode;
 }
 
 export interface ClickParams extends WindowTargetParams {
@@ -86,6 +96,14 @@ export interface ComputerActionsParams extends WindowTargetParams {
 	captureId?: string;
 }
 
+export interface ArrangeWindowParams extends WindowTargetParams {
+	x?: number;
+	y?: number;
+	width?: number;
+	height?: number;
+	preset?: "center_large" | "left_half" | "right_half" | "top_half" | "bottom_half";
+}
+
 export interface WaitParams extends WindowTargetParams {
 	ms?: number;
 }
@@ -120,6 +138,7 @@ interface ExecutionTrace {
 		| "screenshot"
 		| "wait"
 		| "batch"
+		| "window_frame"
 		| "ax_press"
 		| "ax_focus"
 		| "coordinate_event_click"
@@ -170,6 +189,7 @@ export interface ComputerUseDetails {
 		windowRef?: string;
 	};
 	capture: {
+		stateId: string;
 		captureId: string;
 		width: number;
 		height: number;
@@ -184,6 +204,7 @@ export interface ComputerUseDetails {
 		browser_use: boolean;
 		stealth_mode: boolean;
 	};
+	status?: "ok";
 	imageReason?:
 		| "fallback_recovery"
 		| "no_ax_targets"
@@ -393,6 +414,8 @@ interface WindowRefRecord {
 interface RuntimeState {
 	currentTarget?: CurrentTarget;
 	currentCapture?: CurrentCapture;
+	currentStateTarget?: StateTargetSnapshot;
+	currentImageMode?: ImageMode;
 	currentAxTargets?: AxTarget[];
 	windowRefs: Map<string, WindowRefRecord>;
 	windowRefByIdentity: Map<string, string>;
@@ -424,6 +447,7 @@ const TOOL_NAMES = new Set([
 	"type_text",
 	"set_text",
 	"wait",
+	"arrange_window",
 	"computer_actions",
 ]);
 
@@ -720,14 +744,25 @@ function normalizeDragPath(path: DragParams["path"], capture: CurrentCapture): A
 	});
 }
 
-function validateCaptureId(captureId?: string): CurrentCapture {
+function validateStateId(stateId?: string, captureId?: string): CurrentCapture {
 	if (!runtimeState.currentTarget || !runtimeState.currentCapture) {
 		throw new Error(MISSING_TARGET_ERROR);
 	}
-	if (captureId && runtimeState.currentCapture.captureId !== captureId) {
-		throw new Error(STALE_CAPTURE_ERROR);
+	const supplied = stateId || captureId;
+	if (supplied && runtimeState.currentCapture.captureId !== supplied) {
+		throw new Error(
+			`Stale state '${supplied}'. The latest state is '${runtimeState.currentCapture.captureId}' for ${runtimeState.currentTarget.windowRef ?? "the current window"}. Call screenshot${runtimeState.currentTarget.windowRef ? `({ window: "${runtimeState.currentTarget.windowRef}" })` : ""} again and retry.`,
+		);
+	}
+	const stateTarget = runtimeState.currentStateTarget;
+	if (stateTarget && (stateTarget.pid !== runtimeState.currentTarget.pid || stateTarget.windowId !== runtimeState.currentTarget.windowId)) {
+		throw new Error("The latest state belongs to a different window. Call screenshot for the target window and retry.");
 	}
 	return runtimeState.currentCapture;
+}
+
+function validateCaptureId(captureId?: string): CurrentCapture {
+	return validateStateId(undefined, captureId);
 }
 
 function parseAxTargets(result: unknown): AxTarget[] {
@@ -779,7 +814,8 @@ function formatAxTargetLabel(target: AxTarget): string {
 function axTargetByRef(ref: string): AxTarget {
 	const axTarget = runtimeState.currentAxTargets?.find((candidate) => candidate.ref === ref);
 	if (!axTarget) {
-		throw new Error(`AX target '${ref}' is not available for the latest screenshot. Call screenshot again.`);
+		const windowHint = runtimeState.currentTarget?.windowRef ? `({ window: "${runtimeState.currentTarget.windowRef}" })` : "";
+		throw new Error(`AX target '${ref}' is stale or not available for the latest state. Call screenshot${windowHint} again and choose a current @e ref.`);
 	}
 	return axTarget;
 }
@@ -823,7 +859,10 @@ function imageFallbackReason(
 	tool: string,
 	result: CaptureResult,
 	execution: ExecutionTrace,
+	imageMode: ImageMode = "auto",
 ): { reason: NonNullable<ComputerUseDetails["imageReason"]>; message: string } | undefined {
+	if (imageMode === "never") return undefined;
+	if (imageMode === "always") return { reason: "fallback_recovery", message: "An image was requested explicitly for visual verification." };
 	if (execution.fallbackUsed === true) {
 		return { reason: "fallback_recovery", message: "The action used a fallback path, so an image is attached for recovery." }
 	}
@@ -2036,6 +2075,7 @@ async function ensureCaptureImage(result: CaptureResult, signal?: AbortSignal): 
 	}
 	setCurrentTarget(result.target);
 	runtimeState.currentCapture = result.capture;
+	runtimeState.currentStateTarget = { pid: result.target.pid, windowId: result.target.windowId, windowRef: result.target.windowRef };
 	runtimeState.currentAxTargets = result.axTargets;
 }
 
@@ -2056,6 +2096,7 @@ async function captureCurrentTarget(signal?: AbortSignal, priorActivation = empt
 
 	setCurrentTarget(target);
 	runtimeState.currentCapture = capture;
+	runtimeState.currentStateTarget = { pid: target.pid, windowId: target.windowId, windowRef: target.windowRef };
 	runtimeState.currentAxTargets = axTargets;
 
 	return {
@@ -2072,8 +2113,9 @@ async function buildToolResult(
 	result: CaptureResult,
 	execution: ExecutionTrace,
 	signal?: AbortSignal,
+	imageMode: ImageMode = runtimeState.currentImageMode ?? "auto",
 ): Promise<AgentToolResult<ComputerUseDetails>> {
-	const fallbackReason = imageFallbackReason(tool, result, execution);
+	const fallbackReason = imageFallbackReason(tool, result, execution, imageMode);
 	if (fallbackReason) {
 		await ensureCaptureImage(result, signal);
 	}
@@ -2089,6 +2131,7 @@ async function buildToolResult(
 			windowRef: result.target.windowRef ?? runtimeState.currentTarget?.windowRef,
 		},
 		capture: {
+			stateId: result.capture.captureId,
 			captureId: result.capture.captureId,
 			width: result.capture.width,
 			height: result.capture.height,
@@ -2099,6 +2142,7 @@ async function buildToolResult(
 		axTargets: result.axTargets,
 		activation: result.activation,
 		execution,
+		status: "ok",
 		config: getComputerUseConfig(),
 		imageReason: fallbackReason?.reason,
 	};
@@ -2842,7 +2886,12 @@ async function performListWindows(params: ListWindowsParams, signal?: AbortSigna
 	return { content: [{ type: "text", text }], details };
 }
 
+function normalizeImageMode(value: unknown): ImageMode {
+	return value === "always" || value === "never" ? value : "auto";
+}
+
 async function performScreenshot(params: ScreenshotParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails>> {
+	runtimeState.currentImageMode = normalizeImageMode(params.image);
 	const selection = {
 		app: trimOrUndefined(params.app),
 		windowTitle: trimOrUndefined(params.windowTitle),
@@ -2859,12 +2908,13 @@ async function performScreenshot(params: ScreenshotParams, signal?: AbortSignal)
 		);
 	}
 	const summary = `Captured ${captureResult.target.windowRef ? `${captureResult.target.windowRef} ` : ""}${captureResult.target.appName} — ${captureResult.target.windowTitle}. Returned the latest semantic window state.`;
-	return await buildToolResult("screenshot", summary, captureResult, executionTrace("screenshot", "stealth", { fallbackUsed: false }), signal);
+	return await buildToolResult("screenshot", summary, captureResult, executionTrace("screenshot", "stealth", { fallbackUsed: false }), signal, normalizeImageMode(params.image));
 }
 
 async function performClick(params: ClickParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails>> {
+	runtimeState.currentImageMode = normalizeImageMode(params.image);
 	await selectWindowIfProvided(params.window, signal);
-	const capture = validateCaptureId(params.captureId);
+	const capture = validateStateId(params.stateId, params.captureId);
 	const ref = trimOrUndefined(params.ref);
 	const x = toFiniteNumber(params.x, NaN);
 	const y = toFiniteNumber(params.y, NaN);
@@ -2887,6 +2937,7 @@ async function performClick(params: ClickParams, signal?: AbortSignal): Promise<
 }
 
 async function performTypeText(params: TypeTextParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails>> {
+	runtimeState.currentImageMode = normalizeImageMode(params.image);
 	await selectWindowIfProvided(params.window, signal);
 	const text = typeof params.text === "string" ? params.text : "";
 	const currentTarget = await resolveCurrentTarget(signal);
@@ -2911,6 +2962,7 @@ async function performTypeText(params: TypeTextParams, signal?: AbortSignal): Pr
 }
 
 async function performSetText(params: SetTextParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails>> {
+	runtimeState.currentImageMode = normalizeImageMode(params.image);
 	await selectWindowIfProvided(params.window, signal);
 	const text = typeof params.text === "string" ? params.text : "";
 	const currentTarget = await resolveCurrentTarget(signal);
@@ -2935,6 +2987,7 @@ async function performSetText(params: SetTextParams, signal?: AbortSignal): Prom
 }
 
 async function performKeypress(params: KeypressParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails>> {
+	runtimeState.currentImageMode = normalizeImageMode(params.image);
 	await selectWindowIfProvided(params.window, signal);
 	const keys = normalizeKeyList(params.keys);
 	const currentTarget = await resolveCurrentTarget(signal);
@@ -2959,8 +3012,9 @@ async function performKeypress(params: KeypressParams, signal?: AbortSignal): Pr
 }
 
 async function performScroll(params: ScrollParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails>> {
+	runtimeState.currentImageMode = normalizeImageMode(params.image);
 	await selectWindowIfProvided(params.window, signal);
-	const capture = validateCaptureId(params.captureId);
+	const capture = validateStateId(params.stateId, params.captureId);
 	const ref = trimOrUndefined(params.ref);
 	const x = toFiniteNumber(params.x, NaN);
 	const y = toFiniteNumber(params.y, NaN);
@@ -2977,8 +3031,9 @@ async function performScroll(params: ScrollParams, signal?: AbortSignal): Promis
 }
 
 async function performMoveMouse(params: MoveMouseParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails>> {
+	runtimeState.currentImageMode = normalizeImageMode(params.image);
 	await selectWindowIfProvided(params.window, signal);
-	const capture = validateCaptureId(params.captureId);
+	const capture = validateStateId(params.stateId, params.captureId);
 	return await runCoordinateAction(
 		"move_mouse",
 		capture,
@@ -2990,8 +3045,9 @@ async function performMoveMouse(params: MoveMouseParams, signal?: AbortSignal): 
 }
 
 async function performDrag(params: DragParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails>> {
+	runtimeState.currentImageMode = normalizeImageMode(params.image);
 	await selectWindowIfProvided(params.window, signal);
-	const capture = validateCaptureId(params.captureId);
+	const capture = validateStateId(params.stateId, params.captureId);
 	return await runCoordinateAction(
 		"drag",
 		capture,
@@ -3002,8 +3058,9 @@ async function performDrag(params: DragParams, signal?: AbortSignal): Promise<Ag
 }
 
 async function performDoubleClick(params: ClickParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails>> {
+	runtimeState.currentImageMode = normalizeImageMode(params.image);
 	await selectWindowIfProvided(params.window, signal);
-	const capture = validateCaptureId(params.captureId);
+	const capture = validateStateId(params.stateId, params.captureId);
 	const ref = trimOrUndefined(params.ref);
 	const x = toFiniteNumber(params.x, NaN);
 	const y = toFiniteNumber(params.y, NaN);
@@ -3070,9 +3127,51 @@ function actionWindowMatchesTarget(selector: WindowSelector | undefined, target:
 	return Number.isInteger(numeric) && numeric > 0 && target.windowId === numeric;
 }
 
-async function performComputerActions(params: ComputerActionsParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails>> {
+function frameForArrangePreset(params: ArrangeWindowParams, target: ResolvedTarget): { x: number; y: number; width: number; height: number } {
+	if (params.preset === "left_half") return { x: 0, y: 25, width: 720, height: 875 };
+	if (params.preset === "right_half") return { x: 720, y: 25, width: 720, height: 875 };
+	if (params.preset === "top_half") return { x: 80, y: 25, width: 1200, height: 440 };
+	if (params.preset === "bottom_half") return { x: 80, y: 465, width: 1200, height: 435 };
+	if (params.preset === "center_large") return { x: 80, y: 80, width: 1200, height: 800 };
+	return {
+		x: toFiniteNumber(params.x, target.framePoints.x),
+		y: toFiniteNumber(params.y, target.framePoints.y),
+		width: toFiniteNumber(params.width, target.framePoints.w),
+		height: toFiniteNumber(params.height, target.framePoints.h),
+	};
+}
+
+async function performArrangeWindow(params: ArrangeWindowParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails>> {
+	runtimeState.currentImageMode = normalizeImageMode(params.image);
 	await selectWindowIfProvided(params.window, signal);
-	const capture = validateCaptureId(params.captureId);
+	const target = await ensureTargetWindowId(await resolveCurrentTarget(signal), signal);
+	const frame = frameForArrangePreset(params, target);
+	if (![frame.x, frame.y, frame.width, frame.height].every(Number.isFinite) || frame.width < 100 || frame.height < 80) {
+		throw new Error("arrange_window requires finite x, y, width, and height values, or a supported preset.");
+	}
+	const result = await bridgeCommand<any>(
+		"setWindowFrame",
+		{ pid: target.pid, windowId: target.windowId, x: frame.x, y: frame.y, width: frame.width, height: frame.height },
+		{ signal, timeoutMs: COMMAND_TIMEOUT_MS },
+	);
+	if (!toBoolean(result?.ok)) {
+		throw new Error(`Unable to arrange window${result?.reason ? `: ${result.reason}` : "."}`);
+	}
+	await sleep(ACTION_SETTLE_MS, signal);
+	const captureResult = await captureCurrentTarget(signal);
+	return await buildToolResult(
+		"arrange_window",
+		`Arranged ${captureResult.target.windowRef ? `${captureResult.target.windowRef} ` : ""}${captureResult.target.appName} — ${captureResult.target.windowTitle}. Returned the latest semantic window state.`,
+		captureResult,
+		executionTrace("window_frame", "stealth", { fallbackUsed: false }),
+		signal,
+	);
+}
+
+async function performComputerActions(params: ComputerActionsParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails>> {
+	runtimeState.currentImageMode = normalizeImageMode(params.image);
+	await selectWindowIfProvided(params.window, signal);
+	const capture = validateStateId(params.stateId, params.captureId);
 	const actions = Array.isArray(params.actions) ? params.actions : [];
 	if (actions.length === 0) {
 		throw new Error("computer_actions.actions must contain at least one action.");
@@ -3104,8 +3203,9 @@ async function performComputerActions(params: ComputerActionsParams, signal?: Ab
 					`computer_actions action ${index + 1} targets a different window. Use one computer_actions call per window, or set the top-level window field to the intended target.`,
 				);
 			}
-			if ((action as any)?.captureId && (action as any).captureId !== capture.captureId) {
-				throw new Error(STALE_CAPTURE_ERROR);
+			const actionStateId = (action as any)?.stateId ?? (action as any)?.captureId;
+			if (actionStateId && actionStateId !== capture.captureId) {
+				throw new Error(`computer_actions action ${index + 1} uses stale state '${actionStateId}'. Refresh with screenshot and retry.`);
 			}
 			let trace: ExecutionTrace;
 			const startedAt = Date.now();
@@ -3167,6 +3267,7 @@ async function performComputerActions(params: ComputerActionsParams, signal?: Ab
 }
 
 async function performWait(params: WaitParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails>> {
+	runtimeState.currentImageMode = normalizeImageMode(params.image);
 	await selectWindowIfProvided(params.window, signal);
 	if (!runtimeState.currentTarget) {
 		throw new Error(MISSING_TARGET_ERROR);
@@ -3303,6 +3404,16 @@ export async function executeSetText(
 	return await executeTool(ctx, signal, () => performSetText(params, signal));
 }
 
+export async function executeArrangeWindow(
+	_toolCallId: string,
+	params: ArrangeWindowParams,
+	signal: AbortSignal | undefined,
+	_onUpdate: AgentToolUpdateCallback<ComputerUseDetails> | undefined,
+	ctx: ExtensionContext,
+): Promise<AgentToolResult<ComputerUseDetails>> {
+	return await executeTool(ctx, signal, () => performArrangeWindow(params, signal));
+}
+
 export async function executeComputerActions(
 	_toolCallId: string,
 	params: ComputerActionsParams,
@@ -3326,6 +3437,7 @@ export async function executeWait(
 export function reconstructStateFromBranch(ctx: ExtensionContext): void {
 	runtimeState.currentTarget = undefined;
 	runtimeState.currentCapture = undefined;
+	runtimeState.currentStateTarget = undefined;
 	runtimeState.currentAxTargets = undefined;
 	runtimeState.windowRefs.clear();
 	runtimeState.windowRefByIdentity.clear();

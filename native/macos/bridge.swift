@@ -298,6 +298,8 @@ final class Bridge {
 			return try restoreUserFocus(request)
 		case "focusWindow":
 			return try focusWindow(request)
+		case "setWindowFrame":
+			return try setWindowFrame(request)
 		case "screenshot":
 			return try screenshot(request)
 		case "mouseClick":
@@ -550,6 +552,32 @@ final class Bridge {
 			"windowRestored": windowRestored,
 			"appName": app.localizedName ?? "Unknown App",
 			"windowTitle": restoredWindowTitle,
+		]
+	}
+
+	private func setWindowFrame(_ request: [String: Any]) throws -> [String: Any] {
+		let pid = Int32(try intArg(request, "pid"))
+		let windowId = optionalIntArg(request, "windowId").map { UInt32($0) }
+		guard let window = windowElement(pid: pid, windowId: windowId) else {
+			return ["ok": false, "reason": "window_not_found"]
+		}
+		let x = try doubleArg(request, "x")
+		let y = try doubleArg(request, "y")
+		let width = max(100.0, try doubleArg(request, "width"))
+		let height = max(80.0, try doubleArg(request, "height"))
+		var origin = CGPoint(x: x, y: y)
+		var size = CGSize(width: width, height: height)
+		guard let originValue = AXValueCreate(.cgPoint, &origin), let sizeValue = AXValueCreate(.cgSize, &size) else {
+			throw BridgeFailure(message: "Failed to create AX frame values", code: "frame_value_failed")
+		}
+		let positionStatus = AXUIElementSetAttributeValue(window, kAXPositionAttribute as CFString, originValue)
+		let sizeStatus = AXUIElementSetAttributeValue(window, kAXSizeAttribute as CFString, sizeValue)
+		let frame = frameForWindow(window)
+		return [
+			"ok": positionStatus == .success || sizeStatus == .success,
+			"positionStatus": Int(positionStatus.rawValue),
+			"sizeStatus": Int(sizeStatus.rawValue),
+			"framePoints": ["x": frame.origin.x, "y": frame.origin.y, "w": frame.width, "h": frame.height],
 		]
 	}
 
