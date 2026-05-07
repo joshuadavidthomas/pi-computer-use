@@ -5,6 +5,11 @@ Stronger AX-only semantic targeting and smoother macOS setup recovery.
 - Added richer AX extraction diagnostics for inspecting semantic target coverage against the underlying AX tree.
 - Added SSH-aware setup handling to guide remote sessions toward the GUI helper path when macOS permissions cannot apply to SSH-spawned helpers.
 
+## Resolved issues
+
+- Resolved [#10](https://github.com/injaneity/pi-computer-use/issues/10), where SSH-launched helpers could not satisfy macOS Accessibility/Screen Recording checks despite manual grants, by detecting SSH sessions and routing setup through the GUI helper path.
+- Resolved [#9](https://github.com/injaneity/pi-computer-use/issues/9) with clearer setup and recovery guidance for Screen Recording and Accessibility permission grants.
+
 ## Changelog
 
 - Added model benchmark matrix artifacts and reporting in `273aedf`.
