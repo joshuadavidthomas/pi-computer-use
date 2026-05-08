@@ -32,7 +32,7 @@ Codex-style computer use for [Pi](https://pi.dev/) on macOS.
 Install the Pi package:
 
 ```bash
-pi install git:github.com/injaneity/pi-computer-use@v0.2.3
+pi install git:github.com/injaneity/pi-computer-use@v0.2.4
 ```
 
 Start Pi in interactive mode. On the first session, grant macOS permissions to:
@@ -170,25 +170,25 @@ The package is published on npm as `@injaneity/pi-computer-use`.
 
 ```bash
 npm install @injaneity/pi-computer-use
-npm install @injaneity/pi-computer-use@0.2.3
+npm install @injaneity/pi-computer-use@0.2.4
 ```
 
 Pi installs should pin a GitHub release tag:
 
 ```bash
-pi install git:github.com/injaneity/pi-computer-use@v0.2.3
-pi install -l git:github.com/injaneity/pi-computer-use@v0.2.3
+pi install git:github.com/injaneity/pi-computer-use@v0.2.4
+pi install -l git:github.com/injaneity/pi-computer-use@v0.2.4
 pi install /absolute/path/to/pi-computer-use
 ```
 
 Remove:
 
 ```bash
-pi remove git:github.com/injaneity/pi-computer-use@v0.2.3
+pi remove git:github.com/injaneity/pi-computer-use@v0.2.4
 npm remove @injaneity/pi-computer-use
 ```
 
-For a different release, replace `v0.2.3` or `0.2.3` with the version you want to pin.
+For a different release, replace `v0.2.4` or `0.2.4` with the version you want to pin.
 
 ## Screenshots
 
@@ -201,5 +201,5 @@ MIT
 ## See Also
 
 - [Pi](https://pi.dev/)
-- [`@mariozechner/pi-coding-agent`](https://www.npmjs.com/package/@mariozechner/pi-coding-agent)
-- [`@mariozechner/pi-ai`](https://www.npmjs.com/package/@mariozechner/pi-ai)
+- [`@earendil-works/pi-coding-agent`](https://www.npmjs.com/package/@earendil-works/pi-coding-agent)
+- [`@earendil-works/pi-ai`](https://www.npmjs.com/package/@earendil-works/pi-ai)
