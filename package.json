@@ -26,7 +26,6 @@
 	},
 	"files": [
 		"extensions",
-		"skills",
 		"src",
 		"scripts/build-native.mjs",
 		"scripts/setup-helper.mjs",
@@ -39,9 +38,6 @@
 	"pi": {
 		"extensions": [
 			"./extensions"
-		],
-		"skills": [
-			"./skills"
 		],
 		"image": "./assets/img.jpg"
 	},

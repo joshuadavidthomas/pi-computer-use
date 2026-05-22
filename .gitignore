@@ -4,3 +4,7 @@ node_modules/
 package-lock.json
 index-*.js
 main.js
+
+# Local benchmark output
+benchmarks/results/*.local.*
+benchmarks/results/*local*
