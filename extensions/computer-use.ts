@@ -1,5 +1,5 @@
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Type } from "@sinclair/typebox";
+import { Type } from "typebox";
 import {
 	ensureComputerUseSetup,
 	executeArrangeWindow,
@@ -43,7 +43,7 @@ const listAppsTool = defineTool({
 	executionMode: "sequential",
 	parameters: Type.Object({}),
 	async execute(toolCallId, params, signal, onUpdate, ctx) {
-		return await executeListApps(toolCallId, params, signal, onUpdate, ctx);
+		return await executeListApps(toolCallId, params as Record<string, never>, signal, onUpdate, ctx);
 	},
 });
 
