@@ -32,7 +32,7 @@ Codex-style computer use for [Pi](https://pi.dev/) on macOS.
 Install the Pi package:
 
 ```bash
-pi install git:github.com/injaneity/pi-computer-use@v0.2.4
+pi install git:github.com/injaneity/pi-computer-use@v0.2.5
 ```
 
 Start Pi in interactive mode. On the first session, grant macOS permissions to:
@@ -119,7 +119,7 @@ See [docs/usage.md](./docs/usage.md) for the full workflow and tool patterns.
 
 1. The Pi extension in [`extensions/computer-use.ts`](./extensions/computer-use.ts) registers the public tools and `/computer-use` command.
 2. The TypeScript bridge in [`src/bridge.ts`](./src/bridge.ts) manages the current window, capture IDs, AX refs, fallback policy, batching, and execution metadata.
-3. The native Swift helper in [`native/macos/bridge.swift`](./native/macos/bridge.swift) talks to macOS Accessibility, ScreenCaptureKit, AppKit, and CoreGraphics.
+3. The native Swift helper in [`native/macos/bridge.swift`](./native/macos/bridge.swift) talks to macOS Accessibility, AppKit, and CoreGraphics. On macOS 14+, the modern helper also uses ScreenCaptureKit for window capture.
 
 The result is semantic-first GUI control: Pi sees useful AX targets first, falls back to screenshots only when needed, and reports whether each action stayed background-safe.
 
@@ -170,25 +170,25 @@ The package is published on npm as `@injaneity/pi-computer-use`.
 
 ```bash
 npm install @injaneity/pi-computer-use
-npm install @injaneity/pi-computer-use@0.2.4
+npm install @injaneity/pi-computer-use@0.2.5
 ```
 
 Pi installs should pin a GitHub release tag:
 
 ```bash
-pi install git:github.com/injaneity/pi-computer-use@v0.2.4
-pi install -l git:github.com/injaneity/pi-computer-use@v0.2.4
+pi install git:github.com/injaneity/pi-computer-use@v0.2.5
+pi install -l git:github.com/injaneity/pi-computer-use@v0.2.5
 pi install /absolute/path/to/pi-computer-use
 ```
 
 Remove:
 
 ```bash
-pi remove git:github.com/injaneity/pi-computer-use@v0.2.4
+pi remove git:github.com/injaneity/pi-computer-use@v0.2.5
 npm remove @injaneity/pi-computer-use
 ```
 
-For a different release, replace `v0.2.4` or `0.2.4` with the version you want to pin.
+For a different release, replace `v0.2.5` or `0.2.5` with the version you want to pin.
 
 ## Screenshots
 

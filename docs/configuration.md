@@ -56,9 +56,12 @@ PI_COMPUTER_USE_STEALTH_MODE=0
 PI_COMPUTER_USE_STEALTH_MODE=1
 PI_COMPUTER_USE_STEALTH=1
 PI_COMPUTER_USE_STRICT_AX=1
+PI_COMPUTER_USE_HELPER_VARIANT=auto
+PI_COMPUTER_USE_HELPER_VARIANT=modern
+PI_COMPUTER_USE_HELPER_VARIANT=legacy
 ```
 
-`PI_COMPUTER_USE_STEALTH=1` and `PI_COMPUTER_USE_STRICT_AX=1` force `stealth_mode` on.
+`PI_COMPUTER_USE_STEALTH=1` and `PI_COMPUTER_USE_STRICT_AX=1` force `stealth_mode` on. `PI_COMPUTER_USE_HELPER_VARIANT` is normally `auto`: macOS 14+ uses the modern ScreenCaptureKit helper, while macOS 12/13 uses the legacy CGWindow/screencapture helper. Override it only for testing or troubleshooting.
 
 ## Recommended Defaults
 

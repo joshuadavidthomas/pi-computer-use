@@ -52,22 +52,23 @@ Build for the current architecture into the repo prebuilt path:
 npm run build:native
 ```
 
-Build directly to the installed helper path:
+Build directly to the installed helper path. Use `modern` for macOS 14+ ScreenCaptureKit support, or `legacy` for the macOS 12+ CGWindow/screencapture helper:
 
 ```bash
-node scripts/build-native.mjs --output ~/.pi/agent/helpers/pi-computer-use/bridge
+node scripts/build-native.mjs --variant modern --output ~/.pi/agent/helpers/pi-computer-use/bridge
+node scripts/build-native.mjs --variant legacy --output ~/.pi/agent/helpers/pi-computer-use/bridge
 ```
 
-Build both release prebuilts:
+Build both release prebuilts for both helper variants:
 
 ```bash
-node scripts/build-native.mjs --arch all
+node scripts/build-native.mjs --arch all --variant all
 ```
 
 Local helper builds are ad-hoc codesigned by default. For release builds, use a Developer ID Application certificate:
 
 ```bash
-node scripts/build-native.mjs --arch all \
+node scripts/build-native.mjs --arch all --variant all \
   --sign-identity "Developer ID Application: Your Team (TEAMID)" \
   --hardened-runtime \
   --timestamp
