@@ -175,6 +175,10 @@ final class InputSuppressionGuard {
 final class Bridge {
 	private let refStore = AXRefStore()
 	private let inputSuppressionGuard = InputSuppressionGuard()
+	private let browserBundleIds: Set<String> = [
+		"com.apple.Safari", "com.google.Chrome", "org.chromium.Chromium", "company.thebrowser.Browser", "com.brave.Browser", "com.microsoft.edgemac", "com.vivaldi.Vivaldi", "net.imput.helium", "org.mozilla.firefox",
+	]
+	private var enhancedAccessibilityPids = Set<Int32>()
 	private var stdinBuffer = Data()
 
 	func run() {
@@ -489,6 +493,7 @@ final class Bridge {
 			throw BridgeFailure(message: "No frontmost app available", code: "frontmost_unavailable")
 		}
 		let pid = app.processIdentifier
+		ensureEnhancedAccessibility(pid: pid)
 		let appElement = AXUIElementCreateApplication(pid)
 		let focusedWindow = copyAttribute(appElement, attribute: kAXFocusedWindowAttribute as CFString).flatMap(asAXElement)
 		let focusedElement = copyAttribute(appElement, attribute: kAXFocusedUIElementAttribute as CFString).flatMap(asAXElement)
@@ -634,6 +639,7 @@ final class Bridge {
 	}
 
 	private func listWindows(pid: Int32) throws -> [[String: Any]] {
+		ensureEnhancedAccessibility(pid: pid)
 		let appElement = AXUIElementCreateApplication(pid)
 		AXUIElementSetMessagingTimeout(appElement, 1.0)
 		let windows = axElementArray(appElement, attribute: kAXWindowsAttribute as CFString)
@@ -796,6 +802,7 @@ final class Bridge {
 
 	private func axFindTextInput(_ request: [String: Any]) throws -> [String: Any] {
 		let pid = Int32(try intArg(request, "pid"))
+		ensureEnhancedAccessibility(pid: pid)
 		let windowId = optionalIntArg(request, "windowId").map { UInt32($0) }
 		let windowRef = optionalStringArg(request, "windowRef")
 		guard let window = windowElement(pid: pid, windowId: windowId, windowRef: windowRef) else {
@@ -804,7 +811,13 @@ final class Bridge {
 		let textRoles: Set<String> = [
 			"AXTextField", "AXTextArea", "AXTextView", "AXSearchField", "AXComboBox", "AXEditableText", "AXSecureTextField",
 		]
-		let elements = collectDescendants(startingAt: window, maxDepth: 8)
+		let isBrowser = isBrowser(pid: pid)
+		var elements = collectDescendants(startingAt: window, maxDepth: isBrowser ? 14 : 8)
+		let containsWebArea = elements.contains { self.stringAttribute($0, attribute: kAXRoleAttribute as CFString) == "AXWebArea" }
+		let isHybrid = isBrowser || containsWebArea
+		if isHybrid && !isBrowser {
+			elements = collectDescendants(startingAt: window, maxDepth: 14)
+		}
 		let ranked = elements.compactMap { candidate -> (AXUIElement, Double)? in
 			let role = self.stringAttribute(candidate, attribute: kAXRoleAttribute as CFString) ?? ""
 			var valueSettable = DarwinBoolean(false)
@@ -846,6 +859,7 @@ final class Bridge {
 
 	private func axListTargets(_ request: [String: Any]) throws -> [String: Any] {
 		let pid = Int32(try intArg(request, "pid"))
+		ensureEnhancedAccessibility(pid: pid)
 		let windowId = optionalIntArg(request, "windowId").map { UInt32($0) }
 		let windowRef = optionalStringArg(request, "windowRef")
 		let limit = max(1, min(50, optionalIntArg(request, "limit") ?? 12))
@@ -858,13 +872,18 @@ final class Bridge {
 		let structuralRoles: Set<String> = [
 			"AXApplication", "AXWindow", "AXToolbar", "AXGroup", "AXScrollArea", "AXSplitGroup", "AXLayoutArea", "AXTabGroup", "AXWebArea",
 		]
-		let browserBundleIds: Set<String> = [
-			"com.apple.Safari", "com.google.Chrome", "org.chromium.Chromium", "company.thebrowser.Browser", "com.brave.Browser", "com.microsoft.edgemac", "com.vivaldi.Vivaldi", "net.imput.helium", "org.mozilla.firefox",
-		]
 		let windowFrame = frameForWindow(window)
 		let windowArea = max(1.0, windowFrame.width * windowFrame.height)
-		let isBrowser = browserBundleIds.contains(NSRunningApplication(processIdentifier: pid)?.bundleIdentifier ?? "")
-		let elements = collectDescendants(startingAt: window, maxDepth: isBrowser ? 10 : 8)
+		let isBrowser = isBrowser(pid: pid)
+		let maxNodes = 5000
+		var maxDepth = isBrowser ? 14 : 8
+		var elements = collectDescendants(startingAt: window, maxDepth: maxDepth, maxNodes: maxNodes)
+		let containsWebArea = elements.contains { self.stringAttribute($0, attribute: kAXRoleAttribute as CFString) == "AXWebArea" }
+		let isHybrid = isBrowser || containsWebArea
+		if isHybrid && maxDepth < 14 {
+			maxDepth = 14
+			elements = collectDescendants(startingAt: window, maxDepth: maxDepth, maxNodes: maxNodes)
+		}
 		var roleCounts: [String: Int] = [:]
 		var rejectedByReason: [String: Int] = [:]
 		var eligibleCount = 0
@@ -899,13 +918,13 @@ final class Bridge {
 			let normalizedLabel = label.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
 			if structuralRoles.contains(role) {
 				if normalizedLabel.isEmpty && !canScroll { reject("unlabeled_structural"); continue }
-				if role == "AXWebArea" && !isBrowser { reject("non_browser_web_area"); continue }
+				if role == "AXWebArea" && !isHybrid { reject("non_hybrid_web_area"); continue }
 			}
 			if role == "AXTextArea" || role == "AXTextView" {
 				if area > windowArea * 0.55 && !canSetValue { reject("large_unsettable_text_area"); continue }
 			}
-			if role == "AXButton" && normalizedLabel.isEmpty && !isBrowser { reject("unlabeled_button"); continue }
-			if isBrowser && (role == "AXButton" || role == "AXLink" || role == "AXPopUpButton") && normalizedLabel.isEmpty { reject("unlabeled_browser_control"); continue }
+			if role == "AXButton" && normalizedLabel.isEmpty && !isHybrid { reject("unlabeled_button"); continue }
+			if isHybrid && (role == "AXButton" || role == "AXLink" || role == "AXPopUpButton") && normalizedLabel.isEmpty { reject("unlabeled_hybrid_control"); continue }
 			if actions == [kAXShowMenuAction as String] && !isText { reject("show_menu_only"); continue }
 			eligibleCount += 1
 			var score = 0.0
@@ -931,8 +950,8 @@ final class Bridge {
 			if canScroll && role == "AXScrollArea" { score += 180 }
 			if canAdjust && role == "AXScrollBar" { score += 180 }
 			if area > windowArea * 0.7 && role != "AXTextField" && role != "AXSearchField" && role != "AXComboBox" { score -= 180 }
-			if isBrowser && (role == "AXTextField" || role == "AXSearchField" || role == "AXComboBox") { score += 100 }
-			if isBrowser && role == "AXLink" { score += 35 }
+			if isHybrid && (role == "AXTextField" || role == "AXSearchField" || role == "AXComboBox") { score += 100 }
+			if isHybrid && role == "AXLink" { score += 35 }
 			if subrole == "AXCloseButton" { score -= 140 }
 			if normalizedLabel == "close tab" { score -= 180 }
 			if normalizedLabel.count > 160 { score -= 80 }
@@ -941,7 +960,34 @@ final class Bridge {
 			if let existing = bestByKey[key], existing.1 >= score { continue }
 			bestByKey[key] = (candidate, score)
 		}
-		let ranked = bestByKey.values.sorted { $0.1 > $1.1 }
+		var ranked = bestByKey.values.sorted { $0.1 > $1.1 }
+		var usedFallbackElements = Set<String>()
+		if isHybrid && ranked.count < min(3, limit) {
+			let fallbackCandidates = elements.compactMap { candidate -> (AXUIElement, Double)? in
+				guard let frame = self.frameForElement(candidate), frame.width > 20, frame.height > 20 else { return nil }
+				let role = self.stringAttribute(candidate, attribute: kAXRoleAttribute as CFString) ?? ""
+				let title = self.stringAttribute(candidate, attribute: kAXTitleAttribute as CFString) ?? ""
+				let description = self.stringAttribute(candidate, attribute: kAXDescriptionAttribute as CFString) ?? ""
+				let value = self.stringAttribute(candidate, attribute: kAXValueAttribute as CFString) ?? ""
+				let label = [title, description, value].first(where: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) ?? ""
+				let actions = self.actionNames(candidate)
+				if role == "AXWebArea" { return (candidate, label.isEmpty ? 200 : 260) }
+				if role == "AXWindow" && !label.isEmpty { return (candidate, 220) }
+				if role == "AXButton" && actions.contains(kAXPressAction as String) && frame.width >= 12 && frame.height >= 12 { return (candidate, label.isEmpty ? 150 : 190) }
+				if role == "AXGroup" && actions.contains(kAXPressAction as String) && frame.width >= 20 && frame.height >= 20 { return (candidate, label.isEmpty ? 140 : 170) }
+				return nil
+			}.sorted { $0.1 > $1.1 }
+			for candidate in fallbackCandidates {
+				if ranked.count >= limit { break }
+				let frame = self.frameForElement(candidate.0) ?? .zero
+				let role = self.stringAttribute(candidate.0, attribute: kAXRoleAttribute as CFString) ?? ""
+				let key = "fallback|\(role)|\(Int(frame.midX / 24))|\(Int(frame.midY / 24))|\(Int(frame.width / 24))|\(Int(frame.height / 24))"
+				if usedFallbackElements.contains(key) { continue }
+				usedFallbackElements.insert(key)
+				ranked.append(candidate)
+			}
+			ranked.sort { $0.1 > $1.1 }
+		}
 		let topRoles = roleCounts.sorted { $0.value == $1.value ? $0.key < $1.key : $0.value > $1.value }.prefix(16)
 		let diagnostics: [String: Any] = [
 			"axTreeNodeCount": elements.count,
@@ -949,8 +995,15 @@ final class Bridge {
 			"eligibleNodeCount": eligibleCount,
 			"rankedNodeCount": ranked.count,
 			"returnedTargetCount": min(limit, ranked.count),
+			"hybridFallbackUsed": isHybrid && !usedFallbackElements.isEmpty,
 			"roleCounts": Dictionary(uniqueKeysWithValues: topRoles.map { ($0.key, $0.value) }),
 			"rejectedByReason": rejectedByReason,
+			"isBrowser": isBrowser,
+			"containsWebArea": containsWebArea,
+			"isHybrid": isHybrid,
+			"maxDepth": maxDepth,
+			"maxNodes": maxNodes,
+			"hitMaxNodes": elements.count >= maxNodes,
 		]
 		return ["targets": Array(ranked.prefix(limit)).map { self.elementPayload(element: $0.0, key: "target", score: $0.1) }, "diagnostics": diagnostics]
 	}
@@ -1194,17 +1247,32 @@ final class Bridge {
 		collectDescendants(startingAt: root, maxDepth: maxDepth).first(where: predicate)
 	}
 
-	private func collectDescendants(startingAt root: AXUIElement, maxDepth: Int) -> [AXUIElement] {
+	private func ensureEnhancedAccessibility(pid: Int32) {
+		if enhancedAccessibilityPids.contains(pid) { return }
+		enhancedAccessibilityPids.insert(pid)
+		let appElement = AXUIElementCreateApplication(pid)
+		AXUIElementSetMessagingTimeout(appElement, 0.25)
+		_ = AXUIElementSetAttributeValue(appElement, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
+		_ = AXUIElementSetAttributeValue(appElement, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+	}
+
+	private func isBrowser(pid: Int32) -> Bool {
+		browserBundleIds.contains(NSRunningApplication(processIdentifier: pid)?.bundleIdentifier ?? "")
+	}
+
+	private func collectDescendants(startingAt root: AXUIElement, maxDepth: Int, maxNodes: Int = 5000) -> [AXUIElement] {
+		let nodeLimit = max(1, maxNodes)
 		var queue: [(AXUIElement, Int)] = [(root, 0)]
 		var index = 0
 		var output: [AXUIElement] = []
-		while index < queue.count {
+		while index < queue.count && output.count < nodeLimit {
 			let (element, depth) = queue[index]
 			index += 1
 			output.append(element)
 			if depth >= maxDepth { continue }
 			let children = axElementArray(element, attribute: kAXChildrenAttribute as CFString)
 			for child in children {
+				if queue.count >= nodeLimit { break }
 				queue.append((child, depth + 1))
 			}
 		}

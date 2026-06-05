@@ -1,6 +1,10 @@
 {
   "goals": {
     "coreAxOnlyRatio": 0.8,
+    "navigationAxOnlyRatio": 1,
+    "zeroAxTargetCaseCount": 0,
+    "hybridSemanticCoverageRatio": { "target": 1, "whenMetric": "hybridExecuted", "whenAtLeast": 1 },
+    "hybridVisionFallbackRatio": { "target": 0, "whenMetric": "hybridExecuted", "whenAtLeast": 1 },
     "avgLatencyMs": 7500,
     "avgTargetingLatencyMs": 4000
   },

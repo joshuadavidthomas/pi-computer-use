@@ -937,7 +937,7 @@ function imageFallbackReason(
 	const strongTextRoles = new Set(["AXTextField", "AXSearchField", "AXTextArea", "AXTextView", "AXEditableText", "AXComboBox"])
 	const strongTargets = result.axTargets.filter((target) => {
 		const label = normalizeText(target.title || target.description || target.value)
-		return strongTextRoles.has(target.role) || (!!label && (target.actions.includes("AXPress") || target.role === "AXLink" || target.role === "AXButton"))
+		return strongTextRoles.has(target.role) || (!!label && (target.actions.includes("AXPress") || target.role === "AXLink" || target.role === "AXButton" || target.role === "AXWebArea"))
 	})
 	if (result.axTargets.length < 3 && strongTargets.length === 0) {
 		return { reason: "sparse_ax_targets", message: "Only a few AX targets were found, so an image is attached for extra context." }

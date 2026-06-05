@@ -122,6 +122,10 @@ Important metrics:
 Current benchmark goals are defined in `benchmarks/config.json`:
 
 - `coreAxOnlyRatio >= 0.8`
+- `navigationAxOnlyRatio >= 1`
+- `zeroAxTargetCaseCount <= 0`
+- `hybridSemanticCoverageRatio >= 1` when at least one hybrid app case executes
+- `hybridVisionFallbackRatio <= 0` when at least one hybrid app case executes
 - `avgLatencyMs <= 7500`
 - `avgTargetingLatencyMs <= 4000`
 
