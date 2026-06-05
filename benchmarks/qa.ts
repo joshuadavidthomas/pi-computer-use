@@ -129,9 +129,15 @@ function metricHigherIsBetter(metric: string): boolean {
 
 function goalStatus(current: ReturnType<typeof metrics>) {
 	const goals = readJsonFile(CONFIG_PATH)?.goals ?? {};
-	const checks = Object.entries(goals).map(([metric, target]) => {
+	const checks = Object.entries(goals).map(([metric, goal]) => {
+		const spec = typeof goal === "object" && goal !== null ? goal as any : { target: goal };
 		const currentValue = Number((current as any)[metric] ?? 0);
-		const goalValue = Number(target ?? 0);
+		const goalValue = Number(spec.target ?? 0);
+		const whenMetric = typeof spec.whenMetric === "string" ? spec.whenMetric : undefined;
+		const whenAtLeast = Number(spec.whenAtLeast ?? 0);
+		if (whenMetric && Number((current as any)[whenMetric] ?? 0) < whenAtLeast) {
+			return { metric, current: currentValue, target: goalValue, status: "PASS" as const, details: `skipped: requires ${whenMetric} >= ${whenAtLeast}` };
+		}
 		const higherIsBetter = metricHigherIsBetter(metric);
 		const status = higherIsBetter ? currentValue >= goalValue : currentValue <= goalValue;
 		const details = higherIsBetter ? `expected >= ${goalValue}, got ${currentValue}` : `expected <= ${goalValue}, got ${currentValue}`;
@@ -394,6 +400,8 @@ function metrics(records: CaseRecord[]) {
 		coreSparseSemanticCoverageRatio: ratio(corePassed, sparseSemanticCoverage),
 		avgAxTargets: avgAxTargets(passed),
 		coreAvgAxTargets: avgAxTargets(corePassed),
+		hybridExecuted: hybridExecuted.length,
+		hybridPassed: hybridPassed.length,
 		hybridSemanticCoverageRatio: ratio(hybridPassed, semanticCoverageOk),
 		hybridSparseSemanticCoverageRatio: ratio(hybridPassed, sparseSemanticCoverage),
 		hybridVisionFallbackRatio: ratio(hybridExecuted, (record) => record.hasImage === true),
