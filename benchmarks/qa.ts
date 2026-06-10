@@ -18,6 +18,7 @@ import {
 	reconstructStateFromBranch,
 	stopBridge,
 } from "../src/bridge.ts";
+import { runCdpChecks } from "./cdp-qa.ts";
 
 const ALLOW_FOREGROUND_QA =
 	process.argv.includes("--allow-foreground-qa") || process.env.PI_COMPUTER_USE_ALLOW_FOREGROUND_QA === "1";
@@ -62,7 +63,8 @@ type CaseRecord = {
 		| "type_text"
 		| "set_text"
 		| "wait"
-		| "computer_actions";
+		| "computer_actions"
+		| "cdp";
 	app?: string;
 	status: "PASS" | "FAIL" | "SKIP";
 	latencyMs?: number;
@@ -334,7 +336,10 @@ function captureCenter(details: any): { x: number; y: number } {
 }
 
 function metrics(records: CaseRecord[]) {
-	const coreRecords = records.filter((record) => !record.capability && record.category !== "hybrid");
+	// Core excludes capability/hybrid cases and the CDP suite: CDP checks
+	// validate the optional CDP backend, not AX coverage, so they carry no
+	// axTargets/axOnly signals and would skew the AX-quality goals.
+	const coreRecords = records.filter((record) => !record.capability && record.category !== "hybrid" && record.category !== "cdp");
 	const executed = records.filter((record) => record.status !== "SKIP");
 	const coreExecuted = coreRecords.filter((record) => record.status !== "SKIP");
 	const passed = executed.filter((record) => record.status === "PASS");
@@ -865,6 +870,25 @@ async function main() {
 	}
 
 	stopBridge();
+
+	// CDP backend checks run against a self-contained headless Chrome; they
+	// need no macOS permissions and never touch the foreground.
+	const { checks: cdpChecks, skipReason: cdpSkipReason } = await runCdpChecks().catch((error) => ({
+		checks: [],
+		skipReason: `CDP checks crashed: ${error instanceof Error ? error.message : String(error)}`,
+	}));
+	if (cdpSkipReason) {
+		records.push({ name: "cdp-suite", category: "cdp", tool: "cdp", status: "SKIP", details: cdpSkipReason });
+	}
+	for (const check of cdpChecks) {
+		records.push({
+			name: `cdp-${check.name}`,
+			category: "cdp",
+			tool: "cdp",
+			status: check.pass ? "PASS" : "FAIL",
+			details: check.detail,
+		});
+	}
 
 	const benchmarkMetrics = metrics(records);
 	const summary: BenchmarkSummary = {

@@ -102,6 +102,12 @@ For wider coverage that may open apps:
 npm run benchmark:qa:full
 ```
 
+For the CDP backend only (self-contained; launches a headless Chrome, needs no macOS permissions, and is also included in `benchmark:qa` runs):
+
+```bash
+npm run benchmark:cdp
+```
+
 Use benchmark output when changing:
 
 - semantic target ranking

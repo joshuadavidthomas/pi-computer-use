@@ -58,6 +58,12 @@ npx -y tsx benchmarks/qa.ts \
   --output benchmarks/results/current.json
 ```
 
+Run only the CDP backend checks (`cdp-qa.ts`). These launch a self-contained headless Chrome plus a local test server, need no macOS permissions, and verify discovery, tab matching (duplicate titles, multi-window frames), event-driven navigation, console capture, and endpoint resilience. They also run automatically at the end of every `qa.ts` run under the `cdp` category, excluded from the core AX-quality metrics:
+
+```bash
+npm run benchmark:cdp
+```
+
 ## Result format
 
 The benchmark prints a JSON report containing:

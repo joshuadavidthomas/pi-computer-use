@@ -48,6 +48,7 @@
 		"test:commits": "node scripts/check-commit-messages.mjs",
 		"test": "npm run typecheck && npm run test:schema",
 		"build:native": "node scripts/build-native.mjs",
+		"benchmark:cdp": "npx -y tsx benchmarks/cdp-qa.ts",
 		"benchmark:qa": "npx -y tsx benchmarks/qa.ts --allow-foreground-qa",
 		"benchmark:qa:full": "npx -y tsx benchmarks/qa.ts --allow-foreground-qa --allow-screen-takeover",
 		"benchmark:model-matrix": "node scripts/run-model-evals.mjs --evals benchmarks/model-evals.json --output benchmarks/results/model-matrix.json --summary benchmarks/results/model-matrix.md",

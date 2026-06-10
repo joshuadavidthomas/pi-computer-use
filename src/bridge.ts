@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AgentToolResult, AgentToolUpdateCallback, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { cdpTabForWindow, type CdpConsoleEntry } from "./cdp.ts";
 import { getComputerUseConfig, isBrowserUseEnabled, isStrictAxMode, loadComputerUseConfig } from "./config.ts";
 import { ensurePermissions, type PermissionStatus } from "./permissions.ts";
 
@@ -149,6 +150,7 @@ interface ExecutionTrace {
 		| "ax_scroll"
 		| "ax_action"
 		| "browser_open_location"
+		| "cdp_navigate"
 		| "ax_set_value"
 		| "raw_keypress"
 		| "raw_key_text";
@@ -210,6 +212,8 @@ export interface ComputerUseDetails {
 		message?: string;
 		debug?: unknown;
 	};
+	/** Recent browser console messages/exceptions; only present when CDP is active. */
+	console?: CdpConsoleEntry[];
 	imageReason?:
 		| "fallback_recovery"
 		| "browser_ax_window_unavailable"
@@ -1449,6 +1453,10 @@ function isBrowserApp(appName: string, bundleId?: string): boolean {
 	return BROWSER_BUNDLE_IDS.has(bundleId ?? "") || BROWSER_APP_NAMES.has(normalizeText(appName));
 }
 
+function isChromeFamilyApp(appName: string, bundleId?: string): boolean {
+	return CHROME_FAMILY_BUNDLE_IDS.has(bundleId ?? "") || CHROME_FAMILY_APP_NAMES.has(normalizeText(appName));
+}
+
 function assertBrowserUseAllowed(target: { appName: string; bundleId?: string }): void {
 	if (!isBrowserUseEnabled() && isBrowserApp(target.appName, target.bundleId)) {
 		throw new Error(
@@ -1545,7 +1553,7 @@ function buildBrowserNewWindowAppleScript(app: HelperApp): string[] | undefined 
 		return [`tell ${target} to make new document`];
 	}
 
-	if (CHROME_FAMILY_BUNDLE_IDS.has(app.bundleId ?? "") || CHROME_FAMILY_APP_NAMES.has(normalizedName)) {
+	if (isChromeFamilyApp(app.appName, app.bundleId)) {
 		return [`tell ${target} to make new window`];
 	}
 
@@ -1578,7 +1586,7 @@ function browserOpenLocationAppleScript(target: ResolvedTarget, url: string): st
 	if (target.bundleId === "com.apple.Safari" || normalizedName === "safari") {
 		return [`tell ${appTarget} to set URL of front document to "${escapedUrl}"`];
 	}
-	if (CHROME_FAMILY_BUNDLE_IDS.has(target.bundleId ?? "") || CHROME_FAMILY_APP_NAMES.has(normalizedName)) {
+	if (isChromeFamilyApp(target.appName, target.bundleId)) {
 		return [`tell ${appTarget} to set URL of active tab of front window to "${escapedUrl}"`];
 	}
 	return undefined;
@@ -2240,11 +2248,24 @@ async function buildToolResult(
 		config: getComputerUseConfig(),
 		imageReason: fallbackReason?.reason,
 	};
+
+	// Console piggyback: when a CDP connection is active for this browser
+	// window, surface console output collected since the last tool result.
+	let consoleText = "";
+	if (isChromeFamilyApp(result.target.appName, result.target.bundleId)) {
+		const tab = await cdpTabForWindow(result.target.windowTitle, result.target.framePoints);
+		const entries = tab?.drainConsole() ?? [];
+		if (entries.length > 0) {
+			details.console = entries;
+			consoleText = `\n\nBrowser console since the last action:\n${entries.map((entry) => `[${entry.level}] ${entry.text}`).join("\n")}`;
+		}
+	}
+
 	const axTargetText = result.axTargets.length
 		? `\n\nPrefer these AX targets over coordinate clicks or focus-based text replacement when one matches your intent:\n${result.axTargets.map(formatAxTargetLabel).join("\n")}`
 		: "";
 	const fallbackText = fallbackReason ? `\n\n${fallbackReason.message}` : "";
-	const content: AgentToolResult<ComputerUseDetails>["content"] = [{ type: "text", text: `${summary}${axTargetText}${fallbackText}` }];
+	const content: AgentToolResult<ComputerUseDetails>["content"] = [{ type: "text", text: `${summary}${consoleText}${axTargetText}${fallbackText}` }];
 	if (fallbackReason) {
 		content.push({ type: "image", data: result.image!.pngBase64, mimeType: "image/png" });
 	}
@@ -3287,9 +3308,33 @@ async function performNavigateBrowser(params: NavigateBrowserParams, signal?: Ab
 	}
 	const scheme = /^([a-zA-Z][a-zA-Z0-9+.-]*):/.exec(url)?.[1];
 	const looksLikeUrl = /^([a-zA-Z][a-zA-Z0-9+.-]*):\/\//.test(url) || !/\s/.test(url);
-	if (scheme && looksLikeUrl && !/^https?$/i.test(scheme)) {
+	// Script/local schemes are blocked even when whitespace makes the input
+	// look like a search string: "javascript:var x = 1; alert(x)" is a valid,
+	// dangerous URL despite containing spaces.
+	const dangerousScheme = scheme !== undefined && /^(javascript|data|file|vbscript)$/i.test(scheme);
+	if (scheme && (looksLikeUrl || dangerousScheme) && !/^https?$/i.test(scheme)) {
 		throw new Error(`navigate_browser only supports http(s) URLs or browser-search strings; '${scheme}:' URLs are not allowed.`);
 	}
+	// Prefer CDP when available: event-driven page-load wait, no AppleScript,
+	// and no focus change. Bare search strings keep the AppleScript path,
+	// which has address-bar semantics.
+	const cdpTab = /^https?:/i.test(url) && isChromeFamilyApp(target.appName, target.bundleId)
+		? await cdpTabForWindow(target.windowTitle, target.framePoints)
+		: undefined;
+	if (cdpTab) {
+		return await withWindowWriteLock(target, async () => {
+			await cdpTab.navigate(url);
+			const captureResult = await captureCurrentTarget(signal);
+			return await buildToolResult(
+				"navigate_browser",
+				`Navigated ${captureResult.target.windowRef ? `${captureResult.target.windowRef} ` : ""}${captureResult.target.appName} — ${captureResult.target.windowTitle}. Returned the latest semantic window state.`,
+				captureResult,
+				executionTrace("cdp_navigate", "stealth", { axAttempted: false, axSucceeded: false, fallbackUsed: false }),
+				signal,
+			);
+		});
+	}
+
 	const script = browserOpenLocationAppleScript(target, url);
 	if (!script) {
 		throw new Error(`navigate_browser does not yet support direct URL navigation for '${target.appName}'. Use keypress Command+L, type_text, Enter instead.`);
