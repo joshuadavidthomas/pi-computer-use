@@ -1,7 +1,7 @@
 {
 	"name": "@injaneity/pi-computer-use",
 	"version": "0.3.0",
-	"description": "Codex-style computer-use tools for Pi on macOS.",
+	"description": "Pi extension that brings token-efficient desktop & browser automation on macOS.",
 	"type": "module",
 	"keywords": [
 		"pi-package",
