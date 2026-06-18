@@ -653,6 +653,7 @@ const DESKTOP_CONTEXT_PREFIX = "desktop:";
 const MANAGED_BROWSER_READY_TIMEOUT_MS = 15_000;
 const AUTO_IMAGE_MAX_DIMENSION = 1_000;
 const EXPLICIT_IMAGE_MAX_DIMENSION = 1_600;
+const AX_TARGET_TEXT_PREVIEW_CHARS = 240;
 const HELIUM_EXECUTABLE = "/Applications/Helium.app/Contents/MacOS/Helium";
 const CHROME_EXECUTABLE = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 
@@ -973,6 +974,11 @@ function parseAxTargetSource(value: unknown): AxTargetSource {
 	return value === "desktop_ax" || value === "browser_chrome_ax" || value === "web_content_ax" ? value : "unknown_ax";
 }
 
+function previewAxText(value: unknown): string {
+	const text = toOptionalString(value) ?? "";
+	return text.length > AX_TARGET_TEXT_PREVIEW_CHARS ? `${text.slice(0, AX_TARGET_TEXT_PREVIEW_CHARS)}…` : text;
+}
+
 function parseAxTargets(result: unknown): AxTarget[] {
 	const items = Array.isArray(result) ? result : (isRecord(result) ? result.targets : undefined);
 	if (!Array.isArray(items)) return [];
@@ -988,9 +994,9 @@ function parseAxTargets(result: unknown): AxTarget[] {
 				elementRef,
 				role: toOptionalString(target?.role) ?? "",
 				subrole: toOptionalString(target?.subrole) ?? "",
-				title: toOptionalString(target?.title) ?? "",
-				description: toOptionalString(target?.description) ?? "",
-				value: toOptionalString(target?.value) ?? "",
+				title: previewAxText(target?.title),
+				description: previewAxText(target?.description),
+				value: previewAxText(target?.value),
 				actions,
 				source: parseAxTargetSource(target?.source),
 				isTextInput: toBoolean(target?.isTextInput),
