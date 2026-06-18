@@ -16,5 +16,6 @@ Context-aware browser and desktop control release with leaner snapshots and stro
 - added `wait_for` for desktop AX and browser-context condition polling in `97a764f`.
 - added reduced automatic screenshot payloads with preserved coordinate scaling in `1435dd9`.
 - fixed ScreenCaptureKit helper builds so the deprecated `CGWindowListCreateImage` fallback is not compiled into the modern helper in `644b473`.
+- chore updated CI audit to omit auto-installed peer dependencies so release checks focus on this package's production dependency surface in `11b1f50`.
 
 > "Time is an illusion. Lunchtime doubly so."
