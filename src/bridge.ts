@@ -38,6 +38,7 @@ interface WindowTargetParams {
 	window?: WindowSelector;
 	stateId?: string;
 	image?: ImageMode;
+	responseMode?: "state" | "confirmation";
 }
 
 export interface ClickParams extends WindowTargetParams {
@@ -123,7 +124,16 @@ export interface WaitParams extends WindowTargetParams {
 
 export interface SnapshotParams {
 	contextId: string;
+	scopeRef?: string;
+	maxNodes?: number;
+	maxDepth?: number;
 	image?: ImageMode;
+}
+
+export interface ReadTextParams extends WindowTargetParams {
+	ref?: string;
+	offset?: number;
+	limit?: number;
 }
 
 export interface CurrentTarget {
@@ -328,6 +338,25 @@ export interface LaunchBrowserContextDetails {
 	contexts: ContextDetails["contexts"];
 }
 
+export interface ReadTextDetails {
+	tool: "read_text";
+	contextId?: string;
+	ref?: string;
+	offset: number;
+	limit: number;
+	totalChars: number;
+	hasMore: boolean;
+	text: string;
+}
+
+export interface ConfirmationDetails {
+	tool: string;
+	status: "ok";
+	target: Pick<ComputerUseDetails["target"], "app" | "bundleId" | "pid" | "windowTitle" | "windowId" | "windowRef">;
+	execution: ExecutionTrace;
+	message: string;
+}
+
 interface HelperApp {
 	appName: string;
 	bundleId?: string;
@@ -414,6 +443,7 @@ interface HelperAxTarget {
 	x?: number;
 	y?: number;
 	score?: number;
+	depth?: number;
 }
 
 interface ResolvedTarget extends CurrentTarget {
@@ -463,6 +493,7 @@ interface AxTarget {
 	x: number;
 	y: number;
 	score?: number;
+	depth?: number;
 }
 
 interface PendingBrowserAddress {
@@ -518,6 +549,7 @@ const TOOL_NAMES = new Set([
 	"list_windows",
 	"list_contexts",
 	"snapshot",
+	"read_text",
 	"screenshot",
 	"click",
 	"double_click",
@@ -949,6 +981,7 @@ function parseAxTargets(result: unknown): AxTarget[] {
 				x: toFiniteNumber(target?.x, 0),
 				y: toFiniteNumber(target?.y, 0),
 				score: Number.isFinite(target?.score) ? Number(target.score) : undefined,
+				depth: Number.isFinite(target?.depth) ? Math.trunc(Number(target.depth)) : undefined,
 			} as AxTarget;
 		})
 		.filter((item): item is AxTarget => Boolean(item));
@@ -2869,12 +2902,33 @@ async function dispatchDrag(
 	});
 }
 
+function confirmationToolResult(tool: string, target: ResolvedTarget, execution: ExecutionTrace, message: string): AgentToolResult<ConfirmationDetails> {
+	return {
+		content: [{ type: "text", text: message }],
+		details: {
+			tool,
+			status: "ok",
+			target: {
+				app: target.appName,
+				bundleId: target.bundleId,
+				pid: target.pid,
+				windowTitle: target.windowTitle,
+				windowId: target.windowId,
+				windowRef: target.windowRef,
+			},
+			execution,
+			message,
+		},
+	};
+}
+
 async function runActionTool(
 	tool: string,
 	signal: AbortSignal | undefined,
 	dispatch: (target: ResolvedTarget) => Promise<ExecutionTrace>,
-	summaryFactory: (target: ResolvedTarget) => string,
-): Promise<AgentToolResult<ComputerUseDetails>> {
+	summaryFactory: (target: ResolvedTarget, returnedState: boolean) => string,
+	options: { responseMode?: WindowTargetParams["responseMode"] } = {},
+): Promise<AgentToolResult<ComputerUseDetails | ConfirmationDetails>> {
 	const currentTarget = await resolveCurrentTarget(signal);
 	let stateMayHaveChanged = false;
 
@@ -2885,8 +2939,11 @@ async function runActionTool(
 			stateMayHaveChanged = true;
 
 			await sleep(settleMsForExecution(execution), signal);
+			if (options.responseMode === "confirmation") {
+				return confirmationToolResult(tool, readyTarget, execution, summaryFactory(readyTarget, false));
+			}
 			const captureResult = await captureCurrentTarget(signal);
-			return await buildToolResult(tool, summaryFactory(captureResult.target), captureResult, execution, signal);
+			return await buildToolResult(tool, summaryFactory(captureResult.target, true), captureResult, execution, signal);
 		});
 	} catch (error) {
 		if (stateMayHaveChanged) {
@@ -3070,6 +3127,66 @@ async function performBrowserScroll(params: ScrollParams, signal?: AbortSignal):
 	return await refreshBrowserSnapshot(contextId, params.image, signal);
 }
 
+function sliceText(value: string, offsetValue: unknown, limitValue: unknown): Pick<ReadTextDetails, "offset" | "limit" | "totalChars" | "hasMore" | "text"> {
+	const offset = Math.max(0, Math.trunc(toFiniteNumber(offsetValue, 0)));
+	const limit = Math.max(1, Math.min(100_000, Math.trunc(toFiniteNumber(limitValue, 4_000))));
+	const characters = Array.from(value);
+	const end = Math.min(characters.length, offset + limit);
+	return {
+		offset,
+		limit,
+		totalChars: characters.length,
+		hasMore: end < characters.length,
+		text: offset >= characters.length ? "" : characters.slice(offset, end).join(""),
+	};
+}
+
+async function performReadText(params: ReadTextParams, signal?: AbortSignal): Promise<AgentToolResult<ReadTextDetails>> {
+	const contextId = trimOrUndefined(params.contextId);
+	const ref = trimOrUndefined(params.ref);
+	if (isBrowserContextId(contextId)) {
+		const snapshot = await cdpSnapshotForContext(contextId);
+		if (!snapshot) throw new Error(`Browser context '${contextId}' is no longer available. Call list_contexts and snapshot again.`);
+		const sliced = sliceText(snapshot.text, params.offset, params.limit);
+		const details: ReadTextDetails = { tool: "read_text", contextId, ref, ...sliced };
+		return { content: [{ type: "text", text: sliced.text || "(empty text slice)" }], details };
+	}
+
+	const desktopWindowRef = contextId ? desktopWindowRefFromContext(contextId) : undefined;
+	await selectWindowIfProvided(params.window ?? desktopWindowRef, signal);
+	validateStateId(params.stateId);
+	if (!ref) throw new Error("read_text requires ref for desktop contexts. Call screenshot/snapshot and use a text-bearing @e ref.");
+	const target = axTargetByRef(ref);
+	const raw = await bridgeCommand("axReadText", {
+		elementRef: target.elementRef,
+		offset: Math.max(0, Math.trunc(toFiniteNumber(params.offset, 0))),
+		limit: Math.max(1, Math.min(100_000, Math.trunc(toFiniteNumber(params.limit, 4_000)))),
+	}, { signal, timeoutMs: COMMAND_TIMEOUT_MS });
+	const record = isRecord(raw) ? raw : {};
+	const text = toOptionalString(record.text) ?? "";
+	const details: ReadTextDetails = {
+		tool: "read_text",
+		contextId,
+		ref,
+		offset: Math.max(0, Math.trunc(toFiniteNumber(record.offset, 0))),
+		limit: Math.max(1, Math.trunc(toFiniteNumber(record.limit, 4_000))),
+		totalChars: Math.max(0, Math.trunc(toFiniteNumber(record.totalChars, text.length))),
+		hasMore: toBoolean(record.hasMore),
+		text,
+	};
+	return { content: [{ type: "text", text: text || "(empty text slice)" }], details };
+}
+
+async function listAxTreeRaw(target: ResolvedTarget, params: SnapshotParams, signal?: AbortSignal): Promise<unknown> {
+	const scope = trimOrUndefined(params.scopeRef) ? axTargetByRef(trimOrUndefined(params.scopeRef)!).elementRef : undefined;
+	return await bridgeCommand("axSnapshotTree", {
+		...nativeWindowRequest(target),
+		elementRef: scope,
+		maxNodes: Math.max(1, Math.min(500, Math.trunc(toFiniteNumber(params.maxNodes, 120)))),
+		maxDepth: Math.max(1, Math.min(20, Math.trunc(toFiniteNumber(params.maxDepth, 4)))),
+	}, { signal, timeoutMs: COMMAND_TIMEOUT_MS });
+}
+
 async function performSnapshot(params: SnapshotParams, signal?: AbortSignal): Promise<AgentToolResult<SnapshotDetails>> {
 	const contextId = trimOrUndefined(params.contextId);
 	if (!contextId) throw new Error("snapshot.contextId must be a non-empty context id from list_contexts.");
@@ -3094,17 +3211,46 @@ async function performSnapshot(params: SnapshotParams, signal?: AbortSignal): Pr
 
 	const windowRef = desktopWindowRefFromContext(contextId);
 	if (!windowRef) throw new Error(`Unknown context '${contextId}'. Call list_contexts and use a current contextId.`);
-	const result = await performScreenshot({ window: windowRef, image: params.image }, signal);
-	const desktop = result.details;
+	await selectWindowIfProvided(windowRef, signal);
+	let target = await resolveCurrentTarget(signal);
+	target = await ensureTargetWindowId(target, signal);
+	const capture = captureForTarget(target);
+	setCurrentTarget(target);
+	runtimeState.currentCapture = capture;
+	runtimeState.currentStateTarget = { pid: target.pid, windowId: target.windowId, windowRef: target.windowRef };
+	const axResult = await listAxTreeRaw(target, params, signal);
+	const axTargets = parseAxTargets(axResult);
+	runtimeState.currentAxTargets = axTargets;
+	const desktop: ComputerUseDetails = {
+		tool: "snapshot",
+		target: {
+			app: target.appName,
+			bundleId: target.bundleId,
+			pid: target.pid,
+			windowTitle: target.windowTitle,
+			windowId: target.windowId,
+			windowRef: target.windowRef,
+			nativeWindowRef: target.nativeWindowRef,
+		},
+		capture: { ...capture, coordinateSpace: "window-relative-screenshot-pixels" },
+		axTargets,
+		activation: emptyActivation(),
+		execution: executionTrace("screenshot", "stealth", { fallbackUsed: false }),
+		axDiagnostics: axDiagnosticsFromResult(axResult, target),
+		status: "ok",
+		config: getComputerUseConfig(),
+	};
 	const details: SnapshotDetails = {
 		tool: "snapshot",
 		contextId,
 		kind: "desktop_window",
-		snapshotId: desktop.capture.stateId,
-		availableActions: ["snapshot", "click", "double_click", "type_text", "set_text", "keypress", "scroll", "drag", "wait", "arrange_window"],
+		snapshotId: capture.stateId,
+		availableActions: ["snapshot", "click", "double_click", "type_text", "set_text", "keypress", "scroll", "drag", "wait", "arrange_window", "read_text"],
 		desktop,
 	};
-	return { content: result.content, details };
+	const lines = axTargets.map((item) => `${"  ".repeat(Math.max(0, item.depth ?? 0))}${formatAxTargetLabel(item)}`);
+	const scope = trimOrUndefined(params.scopeRef) ? ` scoped to ${params.scopeRef}` : "";
+	return { content: [{ type: "text", text: `Captured desktop context ${contextId}${scope}. ${axTargets.length} AX node${axTargets.length === 1 ? "" : "s"}.\n${lines.join("\n")}` }], details };
 }
 
 async function performScreenshot(params: ScreenshotParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails>> {
@@ -3128,7 +3274,7 @@ async function performScreenshot(params: ScreenshotParams, signal?: AbortSignal)
 	return await buildToolResult("screenshot", summary, captureResult, executionTrace("screenshot", "stealth", { fallbackUsed: false }), signal, normalizeImageMode(params.image));
 }
 
-async function performClick(params: ClickParams, signal?: AbortSignal, tool = "click"): Promise<AgentToolResult<ComputerUseDetails | SnapshotDetails>> {
+async function performClick(params: ClickParams, signal?: AbortSignal, tool = "click"): Promise<AgentToolResult<ComputerUseDetails | SnapshotDetails | ConfirmationDetails>> {
 	const browserResult = await performBrowserClick(params, signal);
 	if (browserResult) return browserResult;
 	runtimeState.currentImageMode = normalizeImageMode(params.image);
@@ -3145,17 +3291,19 @@ async function performClick(params: ClickParams, signal?: AbortSignal, tool = "c
 		tool,
 		signal,
 		async (target) => await dispatchClick({ ...params, clickCount }, capture, target, signal),
-		(target) => {
+		(target, returnedState) => {
+			const suffix = returnedState ? " Returned the latest semantic window state." : " Call snapshot/screenshot if you need updated state.";
 			if (ref) {
 				const axTarget = runtimeState.currentAxTargets?.find((candidate) => candidate.ref === ref);
-				return `${verb} ${axTarget ? formatAxTargetLabel(axTarget) : ref} in ${target.appName} — ${target.windowTitle}. Returned the latest semantic window state.`;
+				return `${verb} ${axTarget ? formatAxTargetLabel(axTarget) : ref} in ${target.appName} — ${target.windowTitle}.${suffix}`;
 			}
-			return `${verb} at (${Math.round(x)},${Math.round(y)}) in ${target.appName} — ${target.windowTitle}. Returned the latest semantic window state.`;
+			return `${verb} at (${Math.round(x)},${Math.round(y)}) in ${target.appName} — ${target.windowTitle}.${suffix}`;
 		},
+		{ responseMode: params.responseMode },
 	);
 }
 
-async function performTypeText(params: TypeTextParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails>> {
+async function performTypeText(params: TypeTextParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails | ConfirmationDetails>> {
 	if (isBrowserContextId(trimOrUndefined(params.contextId))) {
 		throw new Error("type_text is not supported for browser contexts because it has no ref parameter. Use set_text with a browser ref from snapshot instead.");
 	}
@@ -3166,11 +3314,12 @@ async function performTypeText(params: TypeTextParams, signal?: AbortSignal): Pr
 		"type_text",
 		signal,
 		async (target) => await dispatchTypeText(text, target, signal),
-		(target) => `Inserted text in ${target.appName} — ${target.windowTitle}. Returned the latest semantic window state.`,
+		(target, returnedState) => `Inserted text in ${target.appName} — ${target.windowTitle}.${returnedState ? " Returned the latest semantic window state." : " Call snapshot/screenshot if you need updated state."}`,
+		{ responseMode: params.responseMode },
 	);
 }
 
-async function performSetText(params: SetTextParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails | SnapshotDetails>> {
+async function performSetText(params: SetTextParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails | SnapshotDetails | ConfirmationDetails>> {
 	const browserResult = await performBrowserSetText(params, signal);
 	if (browserResult) return browserResult;
 	runtimeState.currentImageMode = normalizeImageMode(params.image);
@@ -3180,11 +3329,12 @@ async function performSetText(params: SetTextParams, signal?: AbortSignal): Prom
 		"set_text",
 		signal,
 		async (target) => await dispatchSetText({ ...params, text }, target, signal),
-		(target) => `Set text value in ${target.appName} — ${target.windowTitle}. Returned the latest semantic window state.`,
+		(target, returnedState) => `Set text value in ${target.appName} — ${target.windowTitle}.${returnedState ? " Returned the latest semantic window state." : " Call snapshot/screenshot if you need updated state."}`,
+		{ responseMode: params.responseMode },
 	);
 }
 
-async function performKeypress(params: KeypressParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails>> {
+async function performKeypress(params: KeypressParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails | ConfirmationDetails>> {
 	runtimeState.currentImageMode = normalizeImageMode(params.image);
 	await selectWindowIfProvided(params.window, signal);
 	const keys = normalizeKeyList(params.keys);
@@ -3192,11 +3342,12 @@ async function performKeypress(params: KeypressParams, signal?: AbortSignal): Pr
 		"keypress",
 		signal,
 		async (target) => await dispatchKeypress({ keys }, target, signal),
-		(target) => `Pressed ${keys.length} key${keys.length === 1 ? "" : "s"} in ${target.appName} — ${target.windowTitle}. Returned the latest semantic window state.`,
+		(target, returnedState) => `Pressed ${keys.length} key${keys.length === 1 ? "" : "s"} in ${target.appName} — ${target.windowTitle}.${returnedState ? " Returned the latest semantic window state." : " Call snapshot/screenshot if you need updated state."}`,
+		{ responseMode: params.responseMode },
 	);
 }
 
-async function performScroll(params: ScrollParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails | SnapshotDetails>> {
+async function performScroll(params: ScrollParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails | SnapshotDetails | ConfirmationDetails>> {
 	const browserResult = await performBrowserScroll(params, signal);
 	if (browserResult) return browserResult;
 	runtimeState.currentImageMode = normalizeImageMode(params.image);
@@ -3209,14 +3360,17 @@ async function performScroll(params: ScrollParams, signal?: AbortSignal): Promis
 		"scroll",
 		signal,
 		async (target) => await dispatchScroll(params, capture, target, signal),
-		(target) =>
-			ref
-				? `Scrolled ${ref} in ${target.appName} — ${target.windowTitle}. Returned the latest semantic window state.`
-				: `Scrolled at (${Math.round(x)},${Math.round(y)}) in ${target.appName} — ${target.windowTitle}. Returned the latest semantic window state.`,
+		(target, returnedState) => {
+			const suffix = returnedState ? " Returned the latest semantic window state." : " Call snapshot/screenshot if you need updated state.";
+			return ref
+				? `Scrolled ${ref} in ${target.appName} — ${target.windowTitle}.${suffix}`
+				: `Scrolled at (${Math.round(x)},${Math.round(y)}) in ${target.appName} — ${target.windowTitle}.${suffix}`;
+		},
+		{ responseMode: params.responseMode },
 	);
 }
 
-async function performMoveMouse(params: MoveMouseParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails>> {
+async function performMoveMouse(params: MoveMouseParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails | ConfirmationDetails>> {
 	runtimeState.currentImageMode = normalizeImageMode(params.image);
 	await selectWindowIfProvided(params.window, signal);
 	const capture = validateStateId(params.stateId);
@@ -3224,12 +3378,13 @@ async function performMoveMouse(params: MoveMouseParams, signal?: AbortSignal): 
 		"move_mouse",
 		signal,
 		async (target) => await dispatchMoveMouse(params, capture, target, signal),
-		(target) =>
-			`Moved mouse to (${Math.round(params.x)},${Math.round(params.y)}) in ${target.appName} — ${target.windowTitle}. Returned the latest semantic window state.`,
+		(target, returnedState) =>
+			`Moved mouse to (${Math.round(params.x)},${Math.round(params.y)}) in ${target.appName} — ${target.windowTitle}.${returnedState ? " Returned the latest semantic window state." : " Call snapshot/screenshot if you need updated state."}`,
+		{ responseMode: params.responseMode },
 	);
 }
 
-async function performDrag(params: DragParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails>> {
+async function performDrag(params: DragParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails | ConfirmationDetails>> {
 	runtimeState.currentImageMode = normalizeImageMode(params.image);
 	await selectWindowIfProvided(params.window, signal);
 	const capture = validateStateId(params.stateId);
@@ -3237,11 +3392,12 @@ async function performDrag(params: DragParams, signal?: AbortSignal): Promise<Ag
 		"drag",
 		signal,
 		async (target) => await dispatchDrag(params, capture, target, signal),
-		(target) => `Dragged in ${target.appName} — ${target.windowTitle}. Returned the latest semantic window state.`,
+		(target, returnedState) => `Dragged in ${target.appName} — ${target.windowTitle}.${returnedState ? " Returned the latest semantic window state." : " Call snapshot/screenshot if you need updated state."}`,
+		{ responseMode: params.responseMode },
 	);
 }
 
-async function performDoubleClick(params: ClickParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails | SnapshotDetails>> {
+async function performDoubleClick(params: ClickParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails | SnapshotDetails | ConfirmationDetails>> {
 	return await performClick({ ...params, clickCount: 2 }, signal, "double_click");
 }
 
@@ -3611,8 +3767,9 @@ export const executeListApps = makeToolExecutor((_params: Record<string, never>,
 export const executeListWindows = makeToolExecutor(performListWindows);
 export const executeListContexts = makeToolExecutor((_params: Record<string, never>, signal) => performListContexts(signal));
 export const executeSnapshot = makeToolExecutor(performSnapshot);
+export const executeReadText = makeToolExecutor(performReadText);
 export const executeScreenshot = makeToolExecutor(performScreenshot);
-export const executeClick = makeToolExecutor<ClickParams, ComputerUseDetails | SnapshotDetails>(performClick);
+export const executeClick = makeToolExecutor<ClickParams, ComputerUseDetails | SnapshotDetails | ConfirmationDetails>(performClick);
 export const executeDoubleClick = makeToolExecutor(performDoubleClick);
 export const executeMoveMouse = makeToolExecutor(performMoveMouse);
 export const executeDrag = makeToolExecutor(performDrag);

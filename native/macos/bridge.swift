@@ -47,6 +47,7 @@ private struct CGWindowCandidate {
 
 private struct AXDescendant {
 	let element: AXUIElement
+	let depth: Int
 	let insideWebArea: Bool
 }
 
@@ -351,6 +352,8 @@ final class Bridge {
 			return try axFocusTextInput(request)
 		case "axListTargets":
 			return try axListTargets(request)
+		case "axSnapshotTree":
+			return try axSnapshotTree(request)
 		case "axPressElement":
 			return try axPressElement(request)
 		case "axPerformActionElement":
@@ -367,6 +370,8 @@ final class Bridge {
 			return try focusedElement(request)
 		case "setValue":
 			return try setValue(request)
+		case "axReadText":
+			return try axReadText(request)
 		case "typeText":
 			return try typeText(request)
 		case "getMousePosition":
@@ -1062,6 +1067,53 @@ final class Bridge {
 		]
 	}
 
+	private func axSnapshotTree(_ request: [String: Any]) throws -> [String: Any] {
+		let pid = Int32(try intArg(request, "pid"))
+		ensureEnhancedAccessibility(pid: pid)
+		let windowId = optionalIntArg(request, "windowId").map { UInt32($0) }
+		let windowRef = optionalStringArg(request, "windowRef")
+		let maxDepth = max(1, min(20, optionalIntArg(request, "maxDepth") ?? 4))
+		let maxNodes = max(1, min(500, optionalIntArg(request, "maxNodes") ?? 120))
+		guard let window = windowElement(pid: pid, windowId: windowId, windowRef: windowRef) else {
+			return ["targets": [], "diagnostics": ["reason": "window_not_found"]]
+		}
+		let root: AXUIElement
+		if let elementRef = optionalStringArg(request, "elementRef") {
+			guard let scoped = refStore.element(for: elementRef), isElement(scoped, descendantOf: window) else {
+				throw BridgeFailure(message: "Scope ref is stale or outside the target window. Call snapshot/screenshot again and use a current ref.", code: "element_ref_invalid")
+			}
+			root = scoped
+		} else {
+			root = window
+		}
+		let descendants = collectDescendantsWithContext(startingAt: root, maxDepth: maxDepth, maxNodes: maxNodes)
+		let isBrowser = isBrowser(pid: pid)
+		let containsWebArea = descendants.contains { descendant in
+			self.stringAttribute(descendant.element, attribute: kAXRoleAttribute as CFString) == "AXWebArea"
+		}
+		let targets = descendants.map { descendant -> [String: Any] in
+			let role = self.stringAttribute(descendant.element, attribute: kAXRoleAttribute as CFString) ?? ""
+			var payload = self.elementPayload(
+				element: descendant.element,
+				key: "target",
+				source: self.axSource(role: role, insideWebArea: descendant.insideWebArea, isBrowser: isBrowser, containsWebArea: containsWebArea)
+			)
+			payload["depth"] = descendant.depth
+			return payload
+		}
+		return [
+			"targets": targets,
+			"diagnostics": [
+				"axTreeNodeCount": descendants.count,
+				"maxDepth": maxDepth,
+				"maxNodes": maxNodes,
+				"hitMaxNodes": descendants.count >= maxNodes,
+				"containsWebArea": containsWebArea,
+				"isBrowser": isBrowser,
+			],
+		]
+	}
+
 	private func axPressElement(_ request: [String: Any]) throws -> [String: Any] {
 		let elementRef = try stringArg(request, "elementRef")
 		guard let targetPid = optionalIntArg(request, "pid").map({ Int32($0) }) else {
@@ -1334,7 +1386,7 @@ final class Bridge {
 			index += 1
 			let role = stringAttribute(element, attribute: kAXRoleAttribute as CFString) ?? ""
 			let insideWebArea = parentInsideWebArea || role == "AXWebArea"
-			output.append(AXDescendant(element: element, insideWebArea: insideWebArea))
+			output.append(AXDescendant(element: element, depth: depth, insideWebArea: insideWebArea))
 			if depth >= maxDepth { continue }
 			let children = axElementArray(element, attribute: kAXChildrenAttribute as CFString)
 			for child in children {
@@ -1642,6 +1694,35 @@ final class Bridge {
 			throw BridgeFailure(message: "Failed to set value (AX error \(status.rawValue))", code: "set_value_failed")
 		}
 		return ["set": true]
+	}
+
+	private func axReadText(_ request: [String: Any]) throws -> [String: Any] {
+		let elementRef = try stringArg(request, "elementRef")
+		let offset = max(0, optionalIntArg(request, "offset") ?? 0)
+		let limit = max(1, min(100_000, optionalIntArg(request, "limit") ?? 4_000))
+		guard let element = refStore.element(for: elementRef) else {
+			throw BridgeFailure(message: "Element reference is no longer valid", code: "element_ref_invalid")
+		}
+		let role = stringAttribute(element, attribute: kAXRoleAttribute as CFString) ?? ""
+		let subrole = stringAttribute(element, attribute: kAXSubroleAttribute as CFString) ?? ""
+		guard !isSecureTextElement(role: role, subrole: subrole) else {
+			throw BridgeFailure(message: "Refers to a secure text field; refusing to read its value", code: "secure_text_unreadable")
+		}
+		guard let value = stringAttribute(element, attribute: kAXValueAttribute as CFString) else {
+			throw BridgeFailure(message: "Element has no readable AXValue. Call snapshot/screenshot and choose a text-bearing ref.", code: "text_unavailable")
+		}
+		let characters = Array(value)
+		if offset >= characters.count {
+			return ["text": "", "offset": offset, "limit": limit, "totalChars": characters.count, "hasMore": false]
+		}
+		let end = min(characters.count, offset + limit)
+		return [
+			"text": String(characters[offset..<end]),
+			"offset": offset,
+			"limit": limit,
+			"totalChars": characters.count,
+			"hasMore": end < characters.count,
+		]
 	}
 
 	private func typeText(_ request: [String: Any]) throws -> [String: Any] {

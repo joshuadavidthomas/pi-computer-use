@@ -15,6 +15,7 @@ import {
 	executeListWindows,
 	executeMoveMouse,
 	executeNavigateBrowser,
+	executeReadText,
 	executeScroll,
 	executeSetText,
 	executeScreenshot,
@@ -34,6 +35,9 @@ const windowSelectorSchema = Type.Optional(Type.Union([
 const stateIdSchema = Type.Optional(Type.String({ description: "Optional state id from the latest screenshot/snapshot" }));
 const imageModeSchema = Type.Optional(Type.Union([Type.Literal("auto"), Type.Literal("always"), Type.Literal("never")], {
 	description: "Optional screenshot attachment mode, default auto",
+}));
+const responseModeSchema = Type.Optional(Type.Union([Type.Literal("state"), Type.Literal("confirmation")], {
+	description: "Optional response mode. Use confirmation to skip post-action state capture when you do not need updated state.",
 }));
 
 const listAppsTool = defineTool({
@@ -95,9 +99,34 @@ const snapshotTool = defineTool({
 	executionMode: "sequential",
 	parameters: Type.Object({
 		contextId: Type.String({ description: "Context id from list_contexts, e.g. desktop:@w1 or browser:<targetId>" }),
+		scopeRef: Type.Optional(Type.String({ description: "Optional desktop AX ref to expand as a scoped subtree, e.g. @e4" })),
+		maxNodes: Type.Optional(Type.Number({ description: "Maximum desktop AX nodes to return, default 120" })),
+		maxDepth: Type.Optional(Type.Number({ description: "Maximum desktop AX depth to traverse, default 4" })),
 		image: imageModeSchema,
 	}),
 	execute: executeSnapshot,
+});
+
+const readTextTool = defineTool({
+	name: "read_text",
+	label: "Read Text",
+	description: "Read text from a text-bearing desktop AX ref or a browser context, with offset/limit pagination.",
+	promptSnippet: "Use this to fetch full text after snapshot/screenshot shows a truncated text-bearing ref or browser page text.",
+	promptGuidelines: [
+		"For desktop, pass ref and stateId from the latest screenshot/snapshot.",
+		"For browser contexts, pass contextId; ref is optional and page text is returned.",
+		"Use offset and limit to page through long content instead of requesting large screenshots.",
+	],
+	executionMode: "sequential",
+	parameters: Type.Object({
+		ref: Type.Optional(Type.String({ description: "Optional text-bearing ref from screenshot/snapshot, e.g. @e1" })),
+		contextId: contextIdSchema,
+		offset: Type.Optional(Type.Number({ description: "Character offset, default 0" })),
+		limit: Type.Optional(Type.Number({ description: "Maximum characters to return, default 4000" })),
+		window: windowSelectorSchema,
+		stateId: stateIdSchema,
+	}),
+	execute: executeReadText,
 });
 
 const screenshotTool = defineTool({
@@ -142,6 +171,7 @@ const clickTool = defineTool({
 		window: windowSelectorSchema,
 		stateId: stateIdSchema,
 		image: imageModeSchema,
+		responseMode: responseModeSchema,
 	}),
 	execute: executeClick,
 });
@@ -166,6 +196,7 @@ const doubleClickTool = defineTool({
 		window: windowSelectorSchema,
 		stateId: stateIdSchema,
 		image: imageModeSchema,
+		responseMode: responseModeSchema,
 	}),
 	execute: executeDoubleClick,
 });
@@ -186,6 +217,7 @@ const moveMouseTool = defineTool({
 		window: windowSelectorSchema,
 		stateId: stateIdSchema,
 		image: imageModeSchema,
+		responseMode: responseModeSchema,
 	}),
 	execute: executeMoveMouse,
 });
@@ -209,6 +241,7 @@ const dragTool = defineTool({
 		window: windowSelectorSchema,
 		stateId: stateIdSchema,
 		image: imageModeSchema,
+		responseMode: responseModeSchema,
 	}),
 	execute: executeDrag,
 });
@@ -233,6 +266,7 @@ const scrollTool = defineTool({
 		window: windowSelectorSchema,
 		stateId: stateIdSchema,
 		image: imageModeSchema,
+		responseMode: responseModeSchema,
 	}),
 	execute: executeScroll,
 });
@@ -252,6 +286,7 @@ const keypressTool = defineTool({
 		window: windowSelectorSchema,
 		stateId: stateIdSchema,
 		image: imageModeSchema,
+		responseMode: responseModeSchema,
 		keys: Type.Array(Type.String({ description: "Key name or chord, e.g. Enter, Tab, Cmd+L" }), {
 			minItems: 1,
 			description: "Keys to press. Modifier arrays like ['Command','L'] are treated as one chord.",
@@ -276,6 +311,7 @@ const typeTextTool = defineTool({
 		window: windowSelectorSchema,
 		stateId: stateIdSchema,
 		image: imageModeSchema,
+		responseMode: responseModeSchema,
 	}),
 	execute: executeTypeText,
 });
@@ -299,6 +335,7 @@ const setTextTool = defineTool({
 		window: windowSelectorSchema,
 		stateId: stateIdSchema,
 		image: imageModeSchema,
+		responseMode: responseModeSchema,
 	}),
 	execute: executeSetText,
 });
@@ -540,6 +577,7 @@ export default function computerUseExtension(pi: ExtensionAPI): void {
 		pi.registerTool(listWindowsTool);
 		pi.registerTool(listContextsTool);
 		pi.registerTool(snapshotTool);
+		pi.registerTool(readTextTool);
 		pi.registerTool(screenshotTool);
 		pi.registerTool(clickTool);
 		pi.registerTool(doubleClickTool);
