@@ -136,6 +136,13 @@ export interface ReadTextParams extends WindowTargetParams {
 	limit?: number;
 }
 
+export interface WaitForParams extends WindowTargetParams {
+	text?: string;
+	role?: string;
+	gone?: boolean;
+	timeoutMs?: number;
+}
+
 export interface CurrentTarget {
 	appName: string;
 	bundleId?: string;
@@ -357,6 +364,18 @@ export interface ConfirmationDetails {
 	message: string;
 }
 
+export interface WaitForDetails {
+	tool: "wait_for";
+	contextId?: string;
+	found: boolean;
+	gone?: boolean;
+	timedOut?: boolean;
+	target?: AxTarget;
+	nodeCount?: number;
+	text?: string;
+	role?: string;
+}
+
 interface HelperApp {
 	appName: string;
 	bundleId?: string;
@@ -550,6 +569,7 @@ const TOOL_NAMES = new Set([
 	"list_contexts",
 	"snapshot",
 	"read_text",
+	"wait_for",
 	"screenshot",
 	"click",
 	"double_click",
@@ -3190,6 +3210,66 @@ async function listAxTreeRaw(target: ResolvedTarget, params: SnapshotParams, sig
 	}, { signal, timeoutMs: COMMAND_TIMEOUT_MS });
 }
 
+function normalizeWaitTimeoutMs(value: unknown): number {
+	return Math.max(100, Math.min(60_000, Math.trunc(toFiniteNumber(value, 10_000))));
+}
+
+async function performWaitFor(params: WaitForParams, signal?: AbortSignal): Promise<AgentToolResult<WaitForDetails>> {
+	const contextId = trimOrUndefined(params.contextId);
+	const text = trimOrUndefined(params.text);
+	const role = trimOrUndefined(params.role);
+	const timeoutMs = normalizeWaitTimeoutMs(params.timeoutMs);
+	if (!text && !role) throw new Error("wait_for requires text or role.");
+
+	if (isBrowserContextId(contextId)) {
+		const deadline = Date.now() + timeoutMs;
+		let lastSnapshot;
+		do {
+			lastSnapshot = await cdpSnapshotForContext(contextId);
+			if (!lastSnapshot) throw new Error(`Browser context '${contextId}' is no longer available. Call list_contexts and snapshot again.`);
+			const matchesText = !text || lastSnapshot.text.toLowerCase().includes(text.toLowerCase()) || lastSnapshot.targets.some((target) => target.name.toLowerCase().includes(text.toLowerCase()));
+			const matchesRole = !role || lastSnapshot.targets.some((target) => target.role === role);
+			const found = matchesText && matchesRole;
+			if (found !== (params.gone === true)) {
+				const details: WaitForDetails = { tool: "wait_for", contextId, found: true, gone: params.gone === true || undefined, nodeCount: lastSnapshot.targets.length, text, role };
+				return { content: [{ type: "text", text: params.gone ? "Condition disappeared." : "Condition appeared." }], details };
+			}
+			await sleep(200, signal);
+		} while (Date.now() < deadline);
+		const details: WaitForDetails = { tool: "wait_for", contextId, found: false, timedOut: true, nodeCount: lastSnapshot?.targets.length, text, role };
+		return { content: [{ type: "text", text: `Timed out after ${timeoutMs}ms waiting for condition.` }], details };
+	}
+
+	const desktopWindowRef = contextId ? desktopWindowRefFromContext(contextId) : undefined;
+	await selectWindowIfProvided(params.window ?? desktopWindowRef, signal);
+	let target = await resolveCurrentTarget(signal);
+	target = await ensureTargetWindowId(target, signal);
+	const raw = await bridgeCommand("axWaitFor", {
+		...nativeWindowRequest(target),
+		text,
+		role,
+		gone: params.gone === true,
+		timeoutMs,
+	}, { signal, timeoutMs: timeoutMs + 2_000 });
+	const record = isRecord(raw) ? raw : {};
+	const axTargets = parseAxTargets(isRecord(record.target) ? { targets: [record.target] } : []);
+	const foundTarget = axTargets[0];
+	if (foundTarget) runtimeState.currentAxTargets = axTargets;
+	const details: WaitForDetails = {
+		tool: "wait_for",
+		contextId,
+		found: toBoolean(record.found),
+		gone: toBoolean(record.gone) || undefined,
+		timedOut: toBoolean(record.timedOut) || undefined,
+		target: foundTarget,
+		nodeCount: Number.isFinite(record.nodeCount) ? Number(record.nodeCount) : undefined,
+		text,
+		role,
+	};
+	const message = details.found ? (details.gone ? "Condition disappeared." : "Condition appeared.") : `Timed out after ${timeoutMs}ms waiting for condition.`;
+	return { content: [{ type: "text", text: message }], details };
+}
+
 async function performSnapshot(params: SnapshotParams, signal?: AbortSignal): Promise<AgentToolResult<SnapshotDetails>> {
 	const contextId = trimOrUndefined(params.contextId);
 	if (!contextId) throw new Error("snapshot.contextId must be a non-empty context id from list_contexts.");
@@ -3771,6 +3851,7 @@ export const executeListWindows = makeToolExecutor(performListWindows);
 export const executeListContexts = makeToolExecutor((_params: Record<string, never>, signal) => performListContexts(signal));
 export const executeSnapshot = makeToolExecutor(performSnapshot);
 export const executeReadText = makeToolExecutor(performReadText);
+export const executeWaitFor = makeToolExecutor(performWaitFor);
 export const executeScreenshot = makeToolExecutor(performScreenshot);
 export const executeClick = makeToolExecutor<ClickParams, ComputerUseDetails | SnapshotDetails | ConfirmationDetails>(performClick);
 export const executeDoubleClick = makeToolExecutor(performDoubleClick);

@@ -354,6 +354,8 @@ final class Bridge {
 			return try axListTargets(request)
 		case "axSnapshotTree":
 			return try axSnapshotTree(request)
+		case "axWaitFor":
+			return try axWaitFor(request)
 		case "axPressElement":
 			return try axPressElement(request)
 		case "axPerformActionElement":
@@ -418,6 +420,12 @@ final class Bridge {
 		if let value = request[key] as? Double {
 			return Int(value)
 		}
+		return nil
+	}
+
+	private func boolArg(_ request: [String: Any], _ key: String) -> Bool? {
+		if let value = request[key] as? Bool { return value }
+		if let value = request[key] as? NSNumber { return value.boolValue }
 		return nil
 	}
 
@@ -1113,6 +1121,69 @@ final class Bridge {
 				"isBrowser": isBrowser,
 			],
 		]
+	}
+
+	private func axWaitFor(_ request: [String: Any]) throws -> [String: Any] {
+		let pid = Int32(try intArg(request, "pid"))
+		ensureEnhancedAccessibility(pid: pid)
+		let windowId = optionalIntArg(request, "windowId").map { UInt32($0) }
+		let windowRef = optionalStringArg(request, "windowRef")
+		let role = optionalStringArg(request, "role")?.trimmingCharacters(in: .whitespacesAndNewlines)
+		let text = optionalStringArg(request, "text")?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+		let waitForGone = boolArg(request, "gone") ?? false
+		let timeoutMs = max(100, min(60_000, optionalIntArg(request, "timeoutMs") ?? 10_000))
+		let deadline = Date().addingTimeInterval(Double(timeoutMs) / 1000.0)
+		guard role?.isEmpty == false || text?.isEmpty == false else {
+			throw BridgeFailure(message: "axWaitFor requires role or text", code: "invalid_args")
+		}
+		guard let window = windowElement(pid: pid, windowId: windowId, windowRef: windowRef) else {
+			return ["found": false, "reason": "window_not_found"]
+		}
+
+		func matches(_ element: AXUIElement) -> Bool {
+			let candidateRole = self.stringAttribute(element, attribute: kAXRoleAttribute as CFString) ?? ""
+			if let role, !role.isEmpty, candidateRole != role { return false }
+			if let text, !text.isEmpty {
+				let subrole = self.stringAttribute(element, attribute: kAXSubroleAttribute as CFString) ?? ""
+				let haystack = [
+					self.stringAttribute(element, attribute: kAXTitleAttribute as CFString) ?? "",
+					self.stringAttribute(element, attribute: kAXDescriptionAttribute as CFString) ?? "",
+					self.displayValue(element, role: candidateRole, subrole: subrole),
+				].joined(separator: "\n").lowercased()
+				if !haystack.contains(text) { return false }
+			}
+			return true
+		}
+
+		var lastCount = 0
+		repeat {
+			let descendants = collectDescendantsWithContext(startingAt: window, maxDepth: 12, maxNodes: 2000)
+			lastCount = descendants.count
+			if let match = descendants.first(where: { matches($0.element) }) {
+				if waitForGone {
+					Thread.sleep(forTimeInterval: 0.2)
+					continue
+				}
+				let candidateRole = self.stringAttribute(match.element, attribute: kAXRoleAttribute as CFString) ?? ""
+				let isBrowser = isBrowser(pid: pid)
+				let containsWebArea = descendants.contains { self.stringAttribute($0.element, attribute: kAXRoleAttribute as CFString) == "AXWebArea" }
+				return [
+					"found": true,
+					"target": self.elementPayload(
+						element: match.element,
+						key: "target",
+						source: self.axSource(role: candidateRole, insideWebArea: match.insideWebArea, isBrowser: isBrowser, containsWebArea: containsWebArea)
+					),
+					"nodeCount": lastCount,
+				]
+			}
+			if waitForGone {
+				return ["found": true, "gone": true, "nodeCount": lastCount]
+			}
+			Thread.sleep(forTimeInterval: 0.2)
+		} while Date() < deadline
+
+		return ["found": false, "timedOut": true, "nodeCount": lastCount]
 	}
 
 	private func axPressElement(_ request: [String: Any]) throws -> [String: Any] {

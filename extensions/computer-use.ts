@@ -22,6 +22,7 @@ import {
 	executeSnapshot,
 	executeTypeText,
 	executeWait,
+	executeWaitFor,
 	reconstructStateFromBranch,
 	stopBridge,
 } from "../src/bridge.ts";
@@ -127,6 +128,29 @@ const readTextTool = defineTool({
 		stateId: stateIdSchema,
 	}),
 	execute: executeReadText,
+});
+
+const waitForTool = defineTool({
+	name: "wait_for",
+	label: "Wait For",
+	description: "Wait until a desktop AX or browser context condition appears or disappears.",
+	promptSnippet: "Use this after actions/navigation when a target may still be loading instead of repeatedly calling wait and snapshot.",
+	promptGuidelines: [
+		"Provide text and/or role to wait for.",
+		"Use gone=true to wait for loading indicators or dialogs to disappear.",
+		"For browser contexts, pass contextId. For desktop, pass window/contextId if needed.",
+	],
+	executionMode: "sequential",
+	parameters: Type.Object({
+		text: Type.Optional(Type.String({ description: "Text substring to wait for" })),
+		role: Type.Optional(Type.String({ description: "Optional exact AX/browser role to wait for" })),
+		gone: Type.Optional(Type.Boolean({ description: "Wait for the condition to disappear instead of appear" })),
+		timeoutMs: Type.Optional(Type.Number({ description: "Timeout in milliseconds, default 10000" })),
+		contextId: contextIdSchema,
+		window: windowSelectorSchema,
+		stateId: stateIdSchema,
+	}),
+	execute: executeWaitFor,
 });
 
 const screenshotTool = defineTool({
@@ -578,6 +602,7 @@ export default function computerUseExtension(pi: ExtensionAPI): void {
 		pi.registerTool(listContextsTool);
 		pi.registerTool(snapshotTool);
 		pi.registerTool(readTextTool);
+		pi.registerTool(waitForTool);
 		pi.registerTool(screenshotTool);
 		pi.registerTool(clickTool);
 		pi.registerTool(doubleClickTool);
