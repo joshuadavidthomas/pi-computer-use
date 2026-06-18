@@ -7,14 +7,18 @@ import {
 	executeComputerActions,
 	executeDoubleClick,
 	executeDrag,
+	executeEvaluateBrowser,
 	executeKeypress,
+	executeLaunchBrowserContext,
 	executeListApps,
+	executeListContexts,
 	executeListWindows,
 	executeMoveMouse,
 	executeNavigateBrowser,
 	executeScroll,
 	executeSetText,
 	executeScreenshot,
+	executeSnapshot,
 	executeTypeText,
 	executeWait,
 	reconstructStateFromBranch,
@@ -22,11 +26,12 @@ import {
 } from "../src/bridge.ts";
 import { getLoadedComputerUseConfig, loadComputerUseConfig } from "../src/config.ts";
 
+const contextIdSchema = Type.Optional(Type.String({ description: "Optional context id from list_contexts, e.g. desktop:@w1 or browser:<targetId>" }));
 const windowSelectorSchema = Type.Optional(Type.Union([
 	Type.String({ description: "Optional window ref from list_windows, e.g. @w1" }),
 	Type.Number({ description: "Optional numeric windowId from list_windows" }),
 ]));
-const stateIdSchema = Type.Optional(Type.String({ description: "Optional state id from the latest screenshot" }));
+const stateIdSchema = Type.Optional(Type.String({ description: "Optional state id from the latest screenshot/snapshot" }));
 const imageModeSchema = Type.Optional(Type.Union([Type.Literal("auto"), Type.Literal("always"), Type.Literal("never")], {
 	description: "Optional screenshot attachment mode, default auto",
 }));
@@ -64,6 +69,37 @@ const listWindowsTool = defineTool({
 	execute: executeListWindows,
 });
 
+const listContextsTool = defineTool({
+	name: "list_contexts",
+	label: "List Contexts",
+	description: "List controllable contexts such as desktop windows and CDP-connected browser pages.",
+	promptSnippet: "List available contexts before choosing what to inspect or control.",
+	promptGuidelines: [
+		"Use this when you need to choose between desktop windows and browser pages.",
+		"Use snapshot with the returned contextId before taking context-grounded actions.",
+	],
+	executionMode: "sequential",
+	parameters: Type.Object({}),
+	execute: executeListContexts,
+});
+
+const snapshotTool = defineTool({
+	name: "snapshot",
+	label: "Snapshot",
+	description: "Capture semantic state for a context. Browser contexts return CDP page text and browser accessibility targets; desktop contexts return macOS AX state.",
+	promptSnippet: "Inspect a context by contextId from list_contexts.",
+	promptGuidelines: [
+		"Prefer this over screenshot when working from a contextId.",
+		"Use browser page text and returned refs when available instead of relying on visual coordinates.",
+	],
+	executionMode: "sequential",
+	parameters: Type.Object({
+		contextId: Type.String({ description: "Context id from list_contexts, e.g. desktop:@w1 or browser:<targetId>" }),
+		image: imageModeSchema,
+	}),
+	execute: executeSnapshot,
+});
+
 const screenshotTool = defineTool({
 	name: "screenshot",
 	label: "Screenshot",
@@ -88,20 +124,21 @@ const screenshotTool = defineTool({
 const clickTool = defineTool({
 	name: "click",
 	label: "Click",
-	description: "Click inside the current controlled window by AX target ref or screenshot-relative coordinates.",
-	promptSnippet: "Click in the current window using coordinates from the latest screenshot or an AX target ref like @e1.",
+	description: "Click in a desktop window or browser context by ref or screenshot-relative coordinates.",
+	promptSnippet: "Click using a ref from the latest screenshot/snapshot, or desktop screenshot coordinates.",
 	promptGuidelines: [
-		"When screenshot returns AX targets, prefer click(ref=@eN) and use coordinates only when no suitable AX target is available.",
-		"Coordinates are window-relative screenshot pixels from the latest screenshot.",
-		"This tool returns the latest semantic state and attaches an image only when fallback is needed.",
+		"For desktop snapshots, prefer AX refs like @e1 before coordinates.",
+		"For browser snapshots, pass contextId, stateId, and a browser ref like @r1.",
+		"Coordinates are window-relative screenshot pixels from the latest desktop screenshot.",
 	],
 	executionMode: "sequential",
 	parameters: Type.Object({
 		x: Type.Optional(Type.Number({ description: "X coordinate in screenshot pixels" })),
 		y: Type.Optional(Type.Number({ description: "Y coordinate in screenshot pixels" })),
-		ref: Type.Optional(Type.String({ description: "Optional AX target ref from the latest screenshot, e.g. @e1" })),
+		ref: Type.Optional(Type.String({ description: "Optional target ref from the latest screenshot/snapshot, e.g. @e1 or @r1" })),
 		button: Type.Optional(Type.Union([Type.Literal("left"), Type.Literal("right"), Type.Literal("middle")])),
 		clickCount: Type.Optional(Type.Number({ description: "Number of clicks, default 1" })),
+		contextId: contextIdSchema,
 		window: windowSelectorSchema,
 		stateId: stateIdSchema,
 		image: imageModeSchema,
@@ -123,8 +160,9 @@ const doubleClickTool = defineTool({
 	parameters: Type.Object({
 		x: Type.Optional(Type.Number({ description: "X coordinate in screenshot pixels" })),
 		y: Type.Optional(Type.Number({ description: "Y coordinate in screenshot pixels" })),
-		ref: Type.Optional(Type.String({ description: "Optional AX target ref from the latest screenshot, e.g. @e1" })),
+		ref: Type.Optional(Type.String({ description: "Optional target ref from the latest screenshot/snapshot, e.g. @e1 or @r1" })),
 		button: Type.Optional(Type.Union([Type.Literal("left"), Type.Literal("right"), Type.Literal("middle")])),
+		contextId: contextIdSchema,
 		window: windowSelectorSchema,
 		stateId: stateIdSchema,
 		image: imageModeSchema,
@@ -188,9 +226,10 @@ const scrollTool = defineTool({
 	parameters: Type.Object({
 		x: Type.Optional(Type.Number({ description: "X coordinate in screenshot pixels" })),
 		y: Type.Optional(Type.Number({ description: "Y coordinate in screenshot pixels" })),
-		ref: Type.Optional(Type.String({ description: "Optional AX scroll target ref from the latest screenshot, e.g. @e1" })),
+		ref: Type.Optional(Type.String({ description: "Optional scroll target ref from the latest screenshot/snapshot, e.g. @e1 or @r1" })),
 		scrollX: Type.Optional(Type.Number({ description: "Horizontal scroll delta in pixels" })),
 		scrollY: Type.Optional(Type.Number({ description: "Vertical scroll delta in pixels" })),
+		contextId: contextIdSchema,
 		window: windowSelectorSchema,
 		stateId: stateIdSchema,
 		image: imageModeSchema,
@@ -255,7 +294,8 @@ const setTextTool = defineTool({
 	executionMode: "sequential",
 	parameters: Type.Object({
 		text: Type.String({ description: "Replacement text value" }),
-		ref: Type.Optional(Type.String({ description: "Optional AX text target ref from the latest screenshot, e.g. @e1" })),
+		ref: Type.Optional(Type.String({ description: "Optional text target ref from the latest screenshot/snapshot, e.g. @e1 or @r1" })),
+		contextId: contextIdSchema,
 		window: windowSelectorSchema,
 		stateId: stateIdSchema,
 		image: imageModeSchema,
@@ -310,6 +350,41 @@ const arrangeWindowTool = defineTool({
 	execute: executeArrangeWindow,
 });
 
+const launchBrowserContextTool = defineTool({
+	name: "launch_browser_context",
+	label: "Launch Browser Context",
+	description: "Launch a Pi-managed Helium or Chrome instance with CDP enabled and return browser contexts.",
+	promptSnippet: "Use this when no browser_page contexts are available or an existing browser was not launched with CDP.",
+	promptGuidelines: [
+		"Prefer this for full browser use instead of controlling an arbitrary existing browser window.",
+		"After launch, call snapshot with a returned browser contextId.",
+	],
+	executionMode: "sequential",
+	parameters: Type.Object({
+		browser: Type.Optional(Type.Union([Type.Literal("helium"), Type.Literal("chrome")], { description: "Browser to launch, default helium" })),
+		url: Type.Optional(Type.String({ description: "Initial URL, default about:blank" })),
+		port: Type.Optional(Type.Number({ description: "Optional CDP port; default is an available local port" })),
+	}),
+	execute: executeLaunchBrowserContext,
+});
+
+const evaluateBrowserTool = defineTool({
+	name: "evaluate_browser",
+	label: "Evaluate Browser",
+	description: "Evaluate JavaScript in a CDP-connected browser context and return the JSON-serializable value.",
+	promptSnippet: "Use this for browser-only inspection when snapshot text/refs are insufficient.",
+	promptGuidelines: [
+		"Use a browser contextId from list_contexts.",
+		"Prefer snapshot for normal page reading; use evaluate_browser for targeted browser state queries.",
+	],
+	executionMode: "sequential",
+	parameters: Type.Object({
+		contextId: Type.String({ description: "Browser context id from list_contexts, e.g. browser:<targetId>" }),
+		expression: Type.String({ description: "JavaScript expression to evaluate with Runtime.evaluate returnByValue semantics" }),
+	}),
+	execute: executeEvaluateBrowser,
+});
+
 const navigateBrowserTool = defineTool({
 	name: "navigate_browser",
 	label: "Navigate Browser",
@@ -322,6 +397,7 @@ const navigateBrowserTool = defineTool({
 	executionMode: "sequential",
 	parameters: Type.Object({
 		url: Type.String({ description: "URL or browser-search string to open" }),
+		contextId: contextIdSchema,
 		window: windowSelectorSchema,
 		image: imageModeSchema,
 	}),
@@ -462,6 +538,8 @@ export default function computerUseExtension(pi: ExtensionAPI): void {
 	try {
 		pi.registerTool(listAppsTool);
 		pi.registerTool(listWindowsTool);
+		pi.registerTool(listContextsTool);
+		pi.registerTool(snapshotTool);
 		pi.registerTool(screenshotTool);
 		pi.registerTool(clickTool);
 		pi.registerTool(doubleClickTool);
@@ -474,6 +552,8 @@ export default function computerUseExtension(pi: ExtensionAPI): void {
 		pi.registerTool(waitTool);
 		pi.registerTool(arrangeWindowTool);
 		pi.registerTool(navigateBrowserTool);
+		pi.registerTool(launchBrowserContextTool);
+		pi.registerTool(evaluateBrowserTool);
 		pi.registerTool(computerActionsTool);
 	} catch (error) {
 		if (isDuplicateToolConflict(error)) {

@@ -11,6 +11,42 @@ export interface CdpConsoleEntry {
 	text: string;
 }
 
+export interface CdpPageContext {
+	contextId: string;
+	targetId: string;
+	title: string;
+	url: string;
+}
+
+export interface CdpSnapshotTarget {
+	ref: string;
+	source: "browser_ax";
+	role: string;
+	name: string;
+	value?: string;
+	actions: string[];
+	backendNodeId?: number;
+}
+
+export interface CdpPageSnapshot {
+	contextId: string;
+	snapshotId: string;
+	targetId: string;
+	title: string;
+	url: string;
+	text: string;
+	targets: CdpSnapshotTarget[];
+	diagnostics: {
+		cdp: "connected";
+		targetCount: number;
+	};
+}
+
+export interface CdpEvaluationResult {
+	contextId: string;
+	value: unknown;
+}
+
 /** Window frame in screen points, as reported by the AX side. */
 export interface WindowFrame {
 	x: number;
@@ -20,6 +56,7 @@ export interface WindowFrame {
 }
 
 const COMMAND_TIMEOUT_MS = 5_000;
+const CDP_CONTEXT_PREFIX = "browser:";
 const NAVIGATE_LOAD_TIMEOUT_MS = 10_000;
 const CONNECT_FAILURE_RETRY_MS = 5_000;
 const CONSOLE_BUFFER_LIMIT = 20;
@@ -80,6 +117,17 @@ export class CdpTab {
 		}
 	}
 
+	/** Evaluates a JS expression in the page and returns its primitive value. */
+	async evaluate(expression: string): Promise<unknown> {
+		const result = await this.send("Runtime.evaluate", { expression, returnByValue: true });
+		return result?.result?.value;
+	}
+
+	async accessibilityTree(): Promise<unknown[]> {
+		const result = await this.send("Accessibility.getFullAXTree");
+		return Array.isArray(result?.nodes) ? result.nodes : [];
+	}
+
 	async navigate(url: string): Promise<void> {
 		const loaded = new Promise<void>((resolve) => {
 			this.loadFired = resolve;
@@ -93,10 +141,31 @@ export class CdpTab {
 		}
 	}
 
-	/** Evaluates a JS expression in the page and returns its primitive value. */
-	async evaluate(expression: string): Promise<unknown> {
-		const result = await this.send("Runtime.evaluate", { expression, returnByValue: true });
-		return result?.result?.value;
+	async clickBackendNode(backendNodeId: number): Promise<void> {
+		await this.withBackendNode(backendNodeId, "function(){ this.scrollIntoView({block:'center', inline:'center'}); this.click(); }");
+	}
+
+	async typeIntoBackendNode(backendNodeId: number, text: string, replace: boolean): Promise<void> {
+		await this.withBackendNode(backendNodeId, "function(text, replace){ this.scrollIntoView({block:'center', inline:'center'}); this.focus(); if (replace) { if ('value' in this) this.value = ''; else this.textContent = ''; } if ('value' in this) this.value += text; else this.textContent = (this.textContent || '') + text; this.dispatchEvent(new InputEvent('input', {bubbles:true, inputType:'insertText', data:text})); this.dispatchEvent(new Event('change', {bubbles:true})); }", [text, replace]);
+	}
+
+	async scrollBy(deltaX: number, deltaY: number, backendNodeId?: number): Promise<void> {
+		if (backendNodeId) {
+			await this.withBackendNode(backendNodeId, "function(dx, dy){ this.scrollIntoView({block:'center', inline:'center'}); this.scrollBy(dx, dy); }", [deltaX, deltaY]);
+			return;
+		}
+		await this.send("Runtime.evaluate", { expression: `window.scrollBy(${JSON.stringify(deltaX)}, ${JSON.stringify(deltaY)})` });
+	}
+
+	private async withBackendNode(backendNodeId: number, functionDeclaration: string, args: unknown[] = []): Promise<void> {
+		const resolved = await this.send("DOM.resolveNode", { backendNodeId });
+		const objectId = resolved?.object?.objectId;
+		if (typeof objectId !== "string") throw new Error(`CDP could not resolve backend node ${backendNodeId}.`);
+		await this.send("Runtime.callFunctionOn", {
+			objectId,
+			functionDeclaration,
+			arguments: args.map((value) => ({ value })),
+		});
 	}
 
 	/** Screen bounds of the browser window containing this tab. */
@@ -225,12 +294,7 @@ export async function cdpTabForWindow(windowTitle: string, frame?: WindowFrame):
 	}
 
 	try {
-		const port = process.env.PI_COMPUTER_USE_CDP_PORT;
-		const response = await fetch(`http://127.0.0.1:${port}/json/list`, { signal: AbortSignal.timeout(2_000) });
-		const targets = (await response.json()) as CdpPageTarget[];
-		const pages = targets.filter((target) =>
-			target.type === "page" && target.webSocketDebuggerUrl && isLocalDebuggerWebSocket(target.webSocketDebuggerUrl, port),
-		);
+		const pages = await cdpPages();
 		const match = await pickTab(pages, windowTitle, frame);
 		if (!match) return undefined;
 
@@ -251,7 +315,152 @@ interface CdpPageTarget {
 	id: string;
 	type: string;
 	title: string;
+	url?: string;
 	webSocketDebuggerUrl?: string;
+}
+
+export async function listCdpPageContexts(): Promise<CdpPageContext[]> {
+	const pages = await cdpPages();
+	return pages.map((page) => ({
+		contextId: cdpContextId(page.id),
+		targetId: page.id,
+		title: page.title,
+		url: page.url ?? "",
+	}));
+}
+
+export async function cdpClickForContext(contextId: string, backendNodeId: number): Promise<boolean> {
+	return (await withCdpContextTab(contextId, async (tab) => {
+		await tab.clickBackendNode(backendNodeId);
+		return true;
+	})) === true;
+}
+
+export async function cdpTypeForContext(contextId: string, backendNodeId: number, text: string, replace: boolean): Promise<boolean> {
+	return (await withCdpContextTab(contextId, async (tab) => {
+		await tab.typeIntoBackendNode(backendNodeId, text, replace);
+		return true;
+	})) === true;
+}
+
+export async function cdpScrollForContext(contextId: string, deltaX: number, deltaY: number, backendNodeId?: number): Promise<boolean> {
+	return (await withCdpContextTab(contextId, async (tab) => {
+		await tab.scrollBy(deltaX, deltaY, backendNodeId);
+		return true;
+	})) === true;
+}
+
+export async function cdpNavigateContext(contextId: string, url: string): Promise<boolean> {
+	return (await withCdpContextTab(contextId, async (tab) => {
+		await tab.navigate(url);
+		return true;
+	})) === true;
+}
+
+export async function cdpEvaluateForContext(contextId: string, expression: string): Promise<CdpEvaluationResult | undefined> {
+	const page = await cdpPageForContext(contextId);
+	if (!page?.webSocketDebuggerUrl) return undefined;
+	const tab = await CdpTab.connect(page.webSocketDebuggerUrl, page.id, page.title);
+	try {
+		return { contextId, value: await tab.evaluate(expression) };
+	} finally {
+		tab.close();
+	}
+}
+
+export async function cdpSnapshotForContext(contextId: string): Promise<CdpPageSnapshot | undefined> {
+	const page = await cdpPageForContext(contextId);
+	if (!page?.webSocketDebuggerUrl) return undefined;
+
+	const tab = await CdpTab.connect(page.webSocketDebuggerUrl, page.id, page.title);
+	try {
+		const [textValue, nodes] = await Promise.all([
+			tab.evaluate("document.body ? document.body.innerText : ''").catch(() => ""),
+			tab.accessibilityTree().catch(() => []),
+		]);
+		const targets = cdpSnapshotTargets(nodes);
+		return {
+			contextId,
+			snapshotId: `snap-${Date.now().toString(36)}`,
+			targetId: page.id,
+			title: page.title,
+			url: page.url ?? "",
+			text: typeof textValue === "string" ? textValue : String(textValue ?? ""),
+			targets,
+			diagnostics: { cdp: "connected", targetCount: targets.length },
+		};
+	} finally {
+		tab.close();
+	}
+}
+
+async function withCdpContextTab<T>(contextId: string, run: (tab: CdpTab) => Promise<T>): Promise<T | undefined> {
+	const page = await cdpPageForContext(contextId);
+	if (!page?.webSocketDebuggerUrl) return undefined;
+	const tab = await CdpTab.connect(page.webSocketDebuggerUrl, page.id, page.title);
+	try {
+		return await run(tab);
+	} finally {
+		tab.close();
+	}
+}
+
+async function cdpPageForContext(contextId: string): Promise<CdpPageTarget | undefined> {
+	if (!contextId.startsWith(CDP_CONTEXT_PREFIX)) return undefined;
+	const targetId = contextId.slice(CDP_CONTEXT_PREFIX.length);
+	const pages = await cdpPages();
+	return pages.find((candidate) => candidate.id === targetId);
+}
+
+async function cdpPages(): Promise<CdpPageTarget[]> {
+	if (!cdpEnabled()) return [];
+	const port = process.env.PI_COMPUTER_USE_CDP_PORT;
+	const response = await fetch(`http://127.0.0.1:${port}/json/list`, { signal: AbortSignal.timeout(2_000) });
+	const targets = (await response.json()) as CdpPageTarget[];
+	return targets.filter((target) =>
+		target.type === "page" && target.webSocketDebuggerUrl && isLocalDebuggerWebSocket(target.webSocketDebuggerUrl, port),
+	);
+}
+
+function cdpContextId(targetId: string): string {
+	return `${CDP_CONTEXT_PREFIX}${targetId}`;
+}
+
+function axString(raw: any): string {
+	const value = raw?.value ?? raw;
+	return typeof value === "string" ? value.trim() : "";
+}
+
+function cdpSnapshotTargets(nodes: unknown[]): CdpSnapshotTarget[] {
+	const targets: CdpSnapshotTarget[] = [];
+	for (const raw of nodes as any[]) {
+		const role = axString(raw?.role);
+		const name = axString(raw?.name);
+		if (!role || !name) continue;
+		const actions = browserActionsForAxRole(role);
+		if (actions.length === 0) continue;
+		const backendNodeId = Number.isFinite(raw?.backendDOMNodeId) ? Math.trunc(raw.backendDOMNodeId) : undefined;
+		if (!backendNodeId && actions.includes("click")) continue;
+		targets.push({
+			ref: `@r${targets.length + 1}`,
+			source: "browser_ax",
+			role,
+			name,
+			value: axString(raw?.value) || undefined,
+			actions,
+			backendNodeId,
+		});
+		if (targets.length >= 80) break;
+	}
+	return targets;
+}
+
+function browserActionsForAxRole(role: string): string[] {
+	const normalized = role.toLowerCase();
+	if (["button", "link", "checkbox", "radio", "menuitem", "tab"].includes(normalized)) return ["click"];
+	if (["textbox", "searchbox", "combobox"].includes(normalized)) return ["click", "set_text"];
+	if (["listbox", "slider", "spinbutton"].includes(normalized)) return ["click"];
+	return [];
 }
 
 function isLocalDebuggerWebSocket(wsUrl: string, expectedPort: string | undefined): boolean {

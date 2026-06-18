@@ -45,6 +45,11 @@ private struct CGWindowCandidate {
 	let isOnscreen: Bool
 }
 
+private struct AXDescendant {
+	let element: AXUIElement
+	let insideWebArea: Bool
+}
+
 final class Box<T> {
 	var value: T
 	init(_ value: T) {
@@ -899,14 +904,26 @@ final class Bridge {
 		let isBrowser = isBrowser(pid: pid)
 		let maxNodes = 5000
 		var maxDepth = isBrowser ? 14 : 8
-		var elements = collectDescendants(startingAt: window, maxDepth: maxDepth, maxNodes: maxNodes)
-		let containsWebArea = elements.contains { self.stringAttribute($0, attribute: kAXRoleAttribute as CFString) == "AXWebArea" }
+		var descendants = collectDescendantsWithContext(startingAt: window, maxDepth: maxDepth, maxNodes: maxNodes)
+		var elements = descendants.map(\.element)
+		var insideWebAreaByElement = insideWebAreaMap(descendants)
+		let containsWebArea = descendants.contains { descendant in
+			self.stringAttribute(descendant.element, attribute: kAXRoleAttribute as CFString) == "AXWebArea"
+		}
 		let isHybrid = isBrowser || containsWebArea
 		if isHybrid && maxDepth < 14 {
 			maxDepth = 14
-			elements = collectDescendants(startingAt: window, maxDepth: maxDepth, maxNodes: maxNodes)
+			descendants = collectDescendantsWithContext(startingAt: window, maxDepth: maxDepth, maxNodes: maxNodes)
+			elements = descendants.map(\.element)
+			insideWebAreaByElement = insideWebAreaMap(descendants)
 		}
+		func sourceForElement(_ element: AXUIElement) -> String {
+			let role = self.stringAttribute(element, attribute: kAXRoleAttribute as CFString) ?? ""
+			return self.axSource(role: role, insideWebArea: insideWebAreaByElement[ObjectIdentifier(element)] ?? false, isBrowser: isBrowser, containsWebArea: containsWebArea)
+		}
+
 		var roleCounts: [String: Int] = [:]
+		var sourceCounts: [String: Int] = [:]
 		var rejectedByReason: [String: Int] = [:]
 		var eligibleCount = 0
 		var visibleFrameCount = 0
@@ -916,7 +933,9 @@ final class Bridge {
 		var bestByKey: [String: (AXUIElement, Double)] = [:]
 		for candidate in elements {
 			let role = self.stringAttribute(candidate, attribute: kAXRoleAttribute as CFString) ?? ""
+			let source = sourceForElement(candidate)
 			roleCounts[role.isEmpty ? "(unknown)" : role, default: 0] += 1
+			sourceCounts[source, default: 0] += 1
 			let subrole = self.stringAttribute(candidate, attribute: kAXSubroleAttribute as CFString) ?? ""
 			let title = self.stringAttribute(candidate, attribute: kAXTitleAttribute as CFString) ?? ""
 			let description = self.stringAttribute(candidate, attribute: kAXDescriptionAttribute as CFString) ?? ""
@@ -1012,6 +1031,9 @@ final class Bridge {
 			ranked.sort { $0.1 > $1.1 }
 		}
 		let topRoles = roleCounts.sorted { $0.value == $1.value ? $0.key < $1.key : $0.value > $1.value }.prefix(16)
+		let webContentTargetCount = ranked.filter { candidate, _ in sourceForElement(candidate) == "web_content_ax" }.count
+		let browserChromeTargetCount = ranked.filter { candidate, _ in sourceForElement(candidate) == "browser_chrome_ax" }.count
+		let browserChromeOnly = isHybrid && browserChromeTargetCount > 0 && webContentTargetCount == 0
 		let diagnostics: [String: Any] = [
 			"axTreeNodeCount": elements.count,
 			"visibleInteractiveNodeCount": visibleFrameCount,
@@ -1020,6 +1042,10 @@ final class Bridge {
 			"returnedTargetCount": min(limit, ranked.count),
 			"hybridFallbackUsed": isHybrid && !usedFallbackElements.isEmpty,
 			"roleCounts": Dictionary(uniqueKeysWithValues: topRoles.map { ($0.key, $0.value) }),
+			"sourceCounts": sourceCounts,
+			"webContentTargetCount": webContentTargetCount,
+			"browserChromeTargetCount": browserChromeTargetCount,
+			"browserChromeOnly": browserChromeOnly,
 			"rejectedByReason": rejectedByReason,
 			"isBrowser": isBrowser,
 			"containsWebArea": containsWebArea,
@@ -1028,7 +1054,12 @@ final class Bridge {
 			"maxNodes": maxNodes,
 			"hitMaxNodes": elements.count >= maxNodes,
 		]
-		return ["targets": Array(ranked.prefix(limit)).map { self.elementPayload(element: $0.0, key: "target", score: $0.1) }, "diagnostics": diagnostics]
+		return [
+			"targets": Array(ranked.prefix(limit)).map { candidate, score in
+				self.elementPayload(element: candidate, key: "target", score: score, source: sourceForElement(candidate))
+			},
+			"diagnostics": diagnostics,
+		]
 	}
 
 	private func axPressElement(_ request: [String: Any]) throws -> [String: Any] {
@@ -1275,8 +1306,14 @@ final class Bridge {
 		enhancedAccessibilityPids.insert(pid)
 		let appElement = AXUIElementCreateApplication(pid)
 		AXUIElementSetMessagingTimeout(appElement, 0.25)
-		_ = AXUIElementSetAttributeValue(appElement, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
-		_ = AXUIElementSetAttributeValue(appElement, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+		let enhancedStatus = AXUIElementSetAttributeValue(appElement, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
+		let manualStatus = AXUIElementSetAttributeValue(appElement, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+		// Chromium-family apps often materialize web-content AX asynchronously
+		// after these toggles. Pay a small one-time settle cost per pid so the
+		// first tree walk is less likely to see browser chrome only.
+		if isBrowser(pid: pid) && (enhancedStatus == .success || manualStatus == .success) {
+			Thread.sleep(forTimeInterval: 0.35)
+		}
 	}
 
 	private func isBrowser(pid: Int32) -> Bool {
@@ -1284,22 +1321,43 @@ final class Bridge {
 	}
 
 	private func collectDescendants(startingAt root: AXUIElement, maxDepth: Int, maxNodes: Int = 5000) -> [AXUIElement] {
+		collectDescendantsWithContext(startingAt: root, maxDepth: maxDepth, maxNodes: maxNodes).map(\.element)
+	}
+
+	private func collectDescendantsWithContext(startingAt root: AXUIElement, maxDepth: Int, maxNodes: Int = 5000) -> [AXDescendant] {
 		let nodeLimit = max(1, maxNodes)
-		var queue: [(AXUIElement, Int)] = [(root, 0)]
+		var queue: [(AXUIElement, Int, Bool)] = [(root, 0, false)]
 		var index = 0
-		var output: [AXUIElement] = []
+		var output: [AXDescendant] = []
 		while index < queue.count && output.count < nodeLimit {
-			let (element, depth) = queue[index]
+			let (element, depth, parentInsideWebArea) = queue[index]
 			index += 1
-			output.append(element)
+			let role = stringAttribute(element, attribute: kAXRoleAttribute as CFString) ?? ""
+			let insideWebArea = parentInsideWebArea || role == "AXWebArea"
+			output.append(AXDescendant(element: element, insideWebArea: insideWebArea))
 			if depth >= maxDepth { continue }
 			let children = axElementArray(element, attribute: kAXChildrenAttribute as CFString)
 			for child in children {
 				if queue.count >= nodeLimit { break }
-				queue.append((child, depth + 1))
+				queue.append((child, depth + 1, insideWebArea))
 			}
 		}
 		return output
+	}
+
+	private func insideWebAreaMap(_ descendants: [AXDescendant]) -> [ObjectIdentifier: Bool] {
+		var output: [ObjectIdentifier: Bool] = [:]
+		for descendant in descendants {
+			let key = ObjectIdentifier(descendant.element)
+			output[key] = (output[key] ?? false) || descendant.insideWebArea
+		}
+		return output
+	}
+
+	private func axSource(role: String, insideWebArea: Bool, isBrowser: Bool, containsWebArea: Bool) -> String {
+		if insideWebArea || role == "AXWebArea" { return "web_content_ax" }
+		if isBrowser || containsWebArea { return "browser_chrome_ax" }
+		return "desktop_ax"
 	}
 
 	private func scoreTextInputElement(_ element: AXUIElement, role: String) -> Double {
@@ -1429,7 +1487,7 @@ final class Bridge {
 		return summary
 	}
 
-	private func elementPayload(element: AXUIElement, key: String, score: Double? = nil) -> [String: Any] {
+	private func elementPayload(element: AXUIElement, key: String, score: Double? = nil, source: String? = nil) -> [String: Any] {
 		let role = stringAttribute(element, attribute: kAXRoleAttribute as CFString) ?? ""
 		let subrole = stringAttribute(element, attribute: kAXSubroleAttribute as CFString) ?? ""
 		let title = stringAttribute(element, attribute: kAXTitleAttribute as CFString) ?? ""
@@ -1471,6 +1529,9 @@ final class Bridge {
 		}
 		if let score {
 			payload["score"] = score
+		}
+		if let source {
+			payload["source"] = source
 		}
 		return payload
 	}

@@ -1,12 +1,13 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import { access } from "node:fs/promises";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AgentToolResult, AgentToolUpdateCallback, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { cdpTabForWindow, type CdpConsoleEntry } from "./cdp.ts";
+import { cdpClickForContext, cdpEvaluateForContext, cdpNavigateContext, cdpScrollForContext, cdpSnapshotForContext, cdpTabForWindow, cdpTypeForContext, listCdpPageContexts, type CdpConsoleEntry, type CdpPageSnapshot } from "./cdp.ts";
 import { getComputerUseConfig, isBrowserUseEnabled, isStrictAxMode, loadComputerUseConfig } from "./config.ts";
 import { ensurePermissions, type PermissionStatus } from "./permissions.ts";
 
@@ -33,6 +34,7 @@ export interface ListWindowsParams {
 }
 
 interface WindowTargetParams {
+	contextId?: string;
 	window?: WindowSelector;
 	stateId?: string;
 	image?: ImageMode;
@@ -104,8 +106,24 @@ export interface NavigateBrowserParams extends WindowTargetParams {
 	url: string;
 }
 
+export interface LaunchBrowserContextParams {
+	browser?: "helium" | "chrome";
+	url?: string;
+	port?: number;
+}
+
+export interface EvaluateBrowserParams {
+	contextId: string;
+	expression: string;
+}
+
 export interface WaitParams extends WindowTargetParams {
 	ms?: number;
+}
+
+export interface SnapshotParams {
+	contextId: string;
+	image?: ImageMode;
 }
 
 export interface CurrentTarget {
@@ -266,6 +284,50 @@ export interface ListWindowsDetails {
 	};
 }
 
+export interface ContextDetails {
+	tool: "list_contexts";
+	contexts: Array<{
+		contextId: string;
+		kind: "desktop_window" | "browser_page";
+		title: string;
+		app?: string;
+		bundleId?: string;
+		pid?: number;
+		windowRef?: string;
+		windowId?: number;
+		url?: string;
+		availableActions: string[];
+	}>;
+	config: {
+		browser_use: boolean;
+		stealth_mode: boolean;
+	};
+}
+
+export interface SnapshotDetails {
+	tool: "snapshot";
+	contextId: string;
+	kind: "desktop_window" | "browser_page";
+	snapshotId: string;
+	availableActions: string[];
+	browser?: CdpPageSnapshot;
+	desktop?: ComputerUseDetails;
+}
+
+export interface EvaluateBrowserDetails {
+	tool: "evaluate_browser";
+	contextId: string;
+	value: unknown;
+}
+
+export interface LaunchBrowserContextDetails {
+	tool: "launch_browser_context";
+	browser: "helium" | "chrome";
+	port: number;
+	url: string;
+	contexts: ContextDetails["contexts"];
+}
+
 interface HelperApp {
 	appName: string;
 	bundleId?: string;
@@ -341,6 +403,7 @@ interface HelperAxTarget {
 	description?: string;
 	value?: string;
 	actions?: string[];
+	source?: string;
 	isTextInput?: boolean;
 	canSetValue?: boolean;
 	canFocus?: boolean;
@@ -370,6 +433,16 @@ interface PendingRequest {
 	abortListener?: () => void;
 }
 
+type AxTargetSource = "desktop_ax" | "browser_chrome_ax" | "web_content_ax" | "unknown_ax";
+
+interface AxDiagnosticsDebug {
+	browserChromeOnly?: boolean;
+	browserChromeTargetCount?: number;
+	webContentTargetCount?: number;
+	sourceCounts?: Record<string, number>;
+	[key: string]: unknown;
+}
+
 interface AxTarget {
 	ref: string;
 	elementRef: string;
@@ -379,6 +452,7 @@ interface AxTarget {
 	description: string;
 	value: string;
 	actions: string[];
+	source: AxTargetSource;
 	isTextInput: boolean;
 	canSetValue: boolean;
 	canFocus: boolean;
@@ -419,6 +493,7 @@ interface RuntimeState {
 	currentStateTarget?: StateTargetSnapshot;
 	currentImageMode?: ImageMode;
 	currentAxTargets?: AxTarget[];
+	browserSnapshots: Map<string, CdpPageSnapshot>;
 	windowRefs: Map<string, WindowRefRecord>;
 	windowRefByIdentity: Map<string, string>;
 	windowWriteQueues: Map<string, Promise<void>>;
@@ -426,6 +501,7 @@ interface RuntimeState {
 	allowNextTypeTextAxReplacement?: boolean;
 	pendingBrowserAddress?: PendingBrowserAddress;
 	helper?: ChildProcessWithoutNullStreams;
+	managedBrowser?: ChildProcess;
 	helperStdoutBuffer: string;
 	pending: Map<string, PendingRequest>;
 	requestSequence: number;
@@ -440,6 +516,8 @@ type MouseButtonName = "left" | "right" | "middle";
 const TOOL_NAMES = new Set([
 	"list_apps",
 	"list_windows",
+	"list_contexts",
+	"snapshot",
 	"screenshot",
 	"click",
 	"double_click",
@@ -452,6 +530,8 @@ const TOOL_NAMES = new Set([
 	"wait",
 	"arrange_window",
 	"navigate_browser",
+	"evaluate_browser",
+	"launch_browser_context",
 	"computer_actions",
 ]);
 
@@ -516,6 +596,11 @@ const CHROME_FAMILY_APP_NAMES = new Set([
 	"helium",
 ]);
 const BROWSER_WINDOW_OPEN_TIMEOUT_MS = 10_000;
+const BROWSER_CONTEXT_PREFIX = "browser:";
+const DESKTOP_CONTEXT_PREFIX = "desktop:";
+const MANAGED_BROWSER_READY_TIMEOUT_MS = 15_000;
+const HELIUM_EXECUTABLE = "/Applications/Helium.app/Contents/MacOS/Helium";
+const CHROME_EXECUTABLE = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 
 export const HELPER_STABLE_PATH = path.join(os.homedir(), ".pi", "agent", "helpers", "pi-computer-use", "bridge");
 
@@ -530,6 +615,7 @@ const runtimeState: RuntimeState = {
 	lastPermissionCheckAt: 0,
 	helperInstallChecked: false,
 	allowNextTypeTextAxReplacement: false,
+	browserSnapshots: new Map(),
 	windowRefs: new Map(),
 	windowRefByIdentity: new Map(),
 	windowWriteQueues: new Map(),
@@ -800,10 +886,27 @@ function validateStateId(stateId?: string): CurrentCapture {
 	return runtimeState.currentCapture;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null;
+}
+
+function parseAxDiagnosticsDebug(value: unknown): AxDiagnosticsDebug | undefined {
+	if (!isRecord(value)) return undefined;
+	return {
+		...value,
+		browserChromeOnly: value.browserChromeOnly === true,
+		browserChromeTargetCount: Number.isFinite(value.browserChromeTargetCount) ? Number(value.browserChromeTargetCount) : undefined,
+		webContentTargetCount: Number.isFinite(value.webContentTargetCount) ? Number(value.webContentTargetCount) : undefined,
+		sourceCounts: isRecord(value.sourceCounts)
+			? Object.fromEntries(Object.entries(value.sourceCounts).filter((entry): entry is [string, number] => Number.isFinite(entry[1])))
+			: undefined,
+	};
+}
+
 function axDiagnosticsFromResult(result: unknown, target: ResolvedTarget): CaptureResult["axDiagnostics"] {
-	const raw = result as any;
-	const reason = toOptionalString(raw?.reason);
-	const debug = raw?.diagnostics;
+	const raw = isRecord(result) ? result : {};
+	const reason = toOptionalString(raw.reason);
+	const debug = parseAxDiagnosticsDebug(raw.diagnostics);
 	if (!reason && debug === undefined) return undefined;
 	if (reason === "window_not_found") {
 		const windowHint = target.windowRef ? ` Use list_windows and choose an existing content window such as ${target.windowRef}, then call screenshot({ window: "${target.windowRef}" }).` : " Use list_windows and choose an existing content window.";
@@ -812,8 +915,12 @@ function axDiagnosticsFromResult(result: unknown, target: ResolvedTarget): Captu
 	return { reason, message: reason ? `Accessibility target listing returned '${reason}'.` : undefined, debug };
 }
 
+function parseAxTargetSource(value: unknown): AxTargetSource {
+	return value === "desktop_ax" || value === "browser_chrome_ax" || value === "web_content_ax" ? value : "unknown_ax";
+}
+
 function parseAxTargets(result: unknown): AxTarget[] {
-	const items = Array.isArray(result) ? result : (result as any)?.targets;
+	const items = Array.isArray(result) ? result : (isRecord(result) ? result.targets : undefined);
 	if (!Array.isArray(items)) return [];
 
 	return items
@@ -831,6 +938,7 @@ function parseAxTargets(result: unknown): AxTarget[] {
 				description: toOptionalString(target?.description) ?? "",
 				value: toOptionalString(target?.value) ?? "",
 				actions,
+				source: parseAxTargetSource(target?.source),
 				isTextInput: toBoolean(target?.isTextInput),
 				canSetValue: toBoolean(target?.canSetValue),
 				canFocus: toBoolean(target?.canFocus),
@@ -855,7 +963,8 @@ function formatAxTargetLabel(target: AxTarget): string {
 		target.canScroll ? "scroll" : undefined,
 		target.canIncrement || target.canDecrement ? "adjust" : undefined,
 	].filter((item): item is string => Boolean(item));
-	return `${target.ref} ${target.role}${target.subrole ? `/${target.subrole}` : ""} ${JSON.stringify(label)}${capabilities.length ? ` [${capabilities.join(",")}]` : ""}`;
+	const source = target.source !== "unknown_ax" ? ` source=${target.source}` : "";
+	return `${target.ref} ${target.role}${target.subrole ? `/${target.subrole}` : ""}${source} ${JSON.stringify(label)}${capabilities.length ? ` [${capabilities.join(",")}]` : ""}`;
 }
 
 function axTargetByRef(ref: string): AxTarget {
@@ -911,6 +1020,12 @@ async function reacquireAxTarget(stale: AxTarget, target: ResolvedTarget, signal
 	return best ? { ...best, ref: stale.ref } : undefined;
 }
 
+function hasOnlyBrowserChromeCoverage(result: CaptureResult): boolean {
+	const hasChromeTargets = result.axTargets.some((target) => target.source === "browser_chrome_ax");
+	const hasContentTargets = result.axTargets.some((target) => target.source === "web_content_ax");
+	return (hasChromeTargets && !hasContentTargets) || result.axDiagnostics?.debug?.browserChromeOnly === true;
+}
+
 function imageFallbackReason(
 	tool: string,
 	result: CaptureResult,
@@ -921,6 +1036,9 @@ function imageFallbackReason(
 	if (imageMode === "always") return { reason: "fallback_recovery", message: "An image was requested explicitly for visual verification." };
 	if (execution.fallbackUsed === true) {
 		return { reason: "fallback_recovery", message: "The action used a fallback path, so an image is attached for recovery." }
+	}
+	if (hasOnlyBrowserChromeCoverage(result)) {
+		return { reason: "weak_ax_targets", message: "Accessibility exposed browser chrome targets but no web-content targets, so an image is attached for content fallback." }
 	}
 	if (result.axTargets.length === 0) {
 		if (isBrowserApp(result.target.appName, result.target.bundleId) && result.axDiagnostics?.reason === "window_not_found") {
@@ -2000,7 +2118,7 @@ interface CaptureResult {
 	capture: CurrentCapture;
 	image?: ScreenshotPayload;
 	axTargets: AxTarget[];
-	axDiagnostics?: { reason?: string; message?: string; debug?: unknown };
+	axDiagnostics?: { reason?: string; message?: string; debug?: AxDiagnosticsDebug };
 	activation: ActivationFlags;
 }
 
@@ -2799,21 +2917,8 @@ async function performListApps(signal?: AbortSignal): Promise<AgentToolResult<Li
 	return { content: [{ type: "text", text }], details };
 }
 
-async function performListWindows(params: ListWindowsParams, signal?: AbortSignal): Promise<AgentToolResult<ListWindowsDetails>> {
-	const rawParams = params ?? {};
-	const query: ListWindowsParams = {
-		app: trimOrUndefined(rawParams.app),
-		bundleId: trimOrUndefined(rawParams.bundleId),
-		pid: Number.isFinite(rawParams.pid) ? Math.trunc(rawParams.pid!) : undefined,
-	};
-	const apps = (await listApps(signal)).filter((app) => appMatchesWindowQuery(app, query));
-	if (apps.length === 0) {
-		throw new Error(
-			`No running app matched list_windows query${query.app ? ` app='${query.app}'` : ""}${query.bundleId ? ` bundleId='${query.bundleId}'` : ""}${query.pid ? ` pid=${query.pid}` : ""}. Call list_apps to inspect running apps.`,
-		);
-	}
-
-	const config = getComputerUseConfig();
+// Side effect: stores stable @w refs for discovered windows in runtimeState.
+async function collectWindowDetails(apps: HelperApp[], config: ReturnType<typeof getComputerUseConfig>, signal?: AbortSignal): Promise<ListWindowsDetails["windows"]> {
 	const windows: ListWindowsDetails["windows"] = [];
 	for (const app of apps) {
 		const appWindows = await listWindows(app.pid, signal);
@@ -2839,7 +2944,25 @@ async function performListWindows(params: ListWindowsParams, signal?: AbortSigna
 		}
 	}
 	windows.sort((a, b) => b.score - a.score || a.app.localeCompare(b.app) || a.windowTitle.localeCompare(b.windowTitle));
+	return windows;
+}
 
+async function performListWindows(params: ListWindowsParams, signal?: AbortSignal): Promise<AgentToolResult<ListWindowsDetails>> {
+	const rawParams = params ?? {};
+	const query: ListWindowsParams = {
+		app: trimOrUndefined(rawParams.app),
+		bundleId: trimOrUndefined(rawParams.bundleId),
+		pid: Number.isFinite(rawParams.pid) ? Math.trunc(rawParams.pid!) : undefined,
+	};
+	const matchingApps = (await listApps(signal)).filter((app) => appMatchesWindowQuery(app, query));
+	if (matchingApps.length === 0) {
+		throw new Error(
+			`No running app matched list_windows query${query.app ? ` app='${query.app}'` : ""}${query.bundleId ? ` bundleId='${query.bundleId}'` : ""}${query.pid ? ` pid=${query.pid}` : ""}. Call list_apps to inspect running apps.`,
+		);
+	}
+
+	const config = getComputerUseConfig();
+	const windows = await collectWindowDetails(matchingApps, config, signal);
 	const details: ListWindowsDetails = { tool: "list_windows", query, windows, config };
 	const lines = windows.map(formatWindowLine);
 	const text = lines.length
@@ -2850,6 +2973,138 @@ async function performListWindows(params: ListWindowsParams, signal?: AbortSigna
 
 function normalizeImageMode(value: unknown): ImageMode {
 	return value === "always" || value === "never" ? value : "auto";
+}
+
+function desktopContextId(windowRef: string): string {
+	return `${DESKTOP_CONTEXT_PREFIX}${windowRef}`;
+}
+
+function isBrowserContextId(contextId: string | undefined): contextId is string {
+	return Boolean(contextId?.startsWith(BROWSER_CONTEXT_PREFIX));
+}
+
+function desktopWindowRefFromContext(contextId: string): string | undefined {
+	return contextId.startsWith(DESKTOP_CONTEXT_PREFIX) ? contextId.slice(DESKTOP_CONTEXT_PREFIX.length) : undefined;
+}
+
+async function performListContexts(signal?: AbortSignal): Promise<AgentToolResult<ContextDetails>> {
+	const config = getComputerUseConfig();
+	const windows = await collectWindowDetails(await listApps(signal), config, signal);
+	const desktopContexts: ContextDetails["contexts"] = windows.map((window) => ({
+		contextId: desktopContextId(window.windowRef),
+		kind: "desktop_window",
+		title: window.windowTitle,
+		app: window.app,
+		bundleId: window.bundleId,
+		pid: window.pid,
+		windowRef: window.windowRef,
+		windowId: window.windowId,
+		availableActions: ["snapshot", "click", "double_click", "type_text", "set_text", "keypress", "scroll", "drag", "wait", "arrange_window"],
+	}));
+	const browserContexts: ContextDetails["contexts"] = (await listCdpPageContexts().catch(() => [])).map((page) => ({
+		contextId: page.contextId,
+		kind: "browser_page",
+		title: page.title,
+		url: page.url,
+		availableActions: ["snapshot", "click", "set_text", "scroll", "navigate_browser", "evaluate_browser"],
+	}));
+	const contexts = [...browserContexts, ...desktopContexts];
+	const details: ContextDetails = { tool: "list_contexts", contexts, config };
+	const lines = contexts.map((context) => {
+		const label = context.kind === "browser_page" ? `${context.title} — ${context.url ?? ""}` : `${context.app} — ${context.title}`;
+		return `- ${context.contextId} ${context.kind} ${label}`;
+	});
+	const text = lines.length
+		? `Found ${lines.length} controllable context${lines.length === 1 ? "" : "s"}. Use snapshot({ contextId }) before acting.\n${lines.join("\n")}`
+		: "No controllable contexts were found.";
+	return { content: [{ type: "text", text }], details };
+}
+
+function browserSnapshotTarget(snapshotId: string | undefined, ref: string | undefined): { contextId: string; backendNodeId?: number } | undefined {
+	if (!snapshotId || !ref) return undefined;
+	const snapshot = runtimeState.browserSnapshots.get(snapshotId);
+	const target = snapshot?.targets.find((candidate) => candidate.ref === ref);
+	if (!snapshot || !target) return undefined;
+	return { contextId: snapshot.contextId, backendNodeId: target.backendNodeId };
+}
+
+async function performBrowserClick(params: ClickParams, signal?: AbortSignal): Promise<AgentToolResult<SnapshotDetails> | undefined> {
+	const contextId = trimOrUndefined(params.contextId);
+	if (!isBrowserContextId(contextId)) return undefined;
+	const target = browserSnapshotTarget(params.stateId, trimOrUndefined(params.ref));
+	if (!target || target.contextId !== contextId || !Number.isFinite(target.backendNodeId)) {
+		throw new Error("Browser click requires contextId, stateId from snapshot, and a clickable browser ref from that snapshot.");
+	}
+	const clickCount = Math.max(1, Math.min(3, Number.isFinite(params.clickCount) ? Math.trunc(params.clickCount!) : 1));
+	for (let index = 0; index < clickCount; index += 1) {
+		const clicked = await cdpClickForContext(contextId, target.backendNodeId!);
+		if (!clicked) throw new Error(`Browser context '${contextId}' is no longer available. Call list_contexts and snapshot again.`);
+	}
+	return await performSnapshot({ contextId, image: params.image }, signal);
+}
+
+// Side effect: browser snapshots are cached so later click(contextId,stateId,ref) can resolve opaque @r refs.
+async function refreshBrowserSnapshot(contextId: string, image?: ImageMode, signal?: AbortSignal): Promise<AgentToolResult<SnapshotDetails>> {
+	return await performSnapshot({ contextId, image }, signal);
+}
+
+async function performBrowserSetText(params: SetTextParams, signal?: AbortSignal): Promise<AgentToolResult<SnapshotDetails> | undefined> {
+	const contextId = trimOrUndefined(params.contextId);
+	if (!isBrowserContextId(contextId)) return undefined;
+	const target = browserSnapshotTarget(params.stateId, trimOrUndefined(params.ref));
+	if (!target || target.contextId !== contextId || !Number.isFinite(target.backendNodeId)) {
+		throw new Error("Browser set_text requires contextId, stateId from snapshot, and an editable browser ref from that snapshot.");
+	}
+	const ok = await cdpTypeForContext(contextId, target.backendNodeId!, typeof params.text === "string" ? params.text : "", true);
+	if (!ok) throw new Error(`Browser context '${contextId}' is no longer available. Call list_contexts and snapshot again.`);
+	return await refreshBrowserSnapshot(contextId, params.image, signal);
+}
+
+async function performBrowserScroll(params: ScrollParams, signal?: AbortSignal): Promise<AgentToolResult<SnapshotDetails> | undefined> {
+	const contextId = trimOrUndefined(params.contextId);
+	if (!isBrowserContextId(contextId)) return undefined;
+	const target = browserSnapshotTarget(params.stateId, trimOrUndefined(params.ref));
+	if (params.ref && (!target || target.contextId !== contextId)) throw new Error("Browser scroll ref must come from the supplied snapshot stateId.");
+	const ok = await cdpScrollForContext(contextId, toFiniteNumber(params.scrollX, 0), toFiniteNumber(params.scrollY, 0), target?.backendNodeId);
+	if (!ok) throw new Error(`Browser context '${contextId}' is no longer available. Call list_contexts and snapshot again.`);
+	return await refreshBrowserSnapshot(contextId, params.image, signal);
+}
+
+async function performSnapshot(params: SnapshotParams, signal?: AbortSignal): Promise<AgentToolResult<SnapshotDetails>> {
+	const contextId = trimOrUndefined(params.contextId);
+	if (!contextId) throw new Error("snapshot.contextId must be a non-empty context id from list_contexts.");
+
+	const browser = await cdpSnapshotForContext(contextId).catch(() => undefined);
+	if (browser) {
+		const targetText = browser.targets.length
+			? `\n\nTargets:\n${browser.targets.map((target) => `${target.ref} ${target.role} \"${target.name}\" [${target.actions.join(",")}]`).join("\n")}`
+			: "";
+		const pageText = browser.text ? `\n\nPage text:\n${browser.text.slice(0, 12_000)}` : "";
+		runtimeState.browserSnapshots.set(browser.snapshotId, browser);
+		const details: SnapshotDetails = {
+			tool: "snapshot",
+			contextId,
+			kind: "browser_page",
+			snapshotId: browser.snapshotId,
+			availableActions: ["snapshot", "click", "set_text", "scroll", "navigate_browser", "evaluate_browser"],
+			browser,
+		};
+		return { content: [{ type: "text", text: `Captured browser context ${contextId}: ${browser.title}.${targetText}${pageText}` }], details };
+	}
+
+	const windowRef = desktopWindowRefFromContext(contextId);
+	if (!windowRef) throw new Error(`Unknown context '${contextId}'. Call list_contexts and use a current contextId.`);
+	const result = await performScreenshot({ window: windowRef, image: params.image }, signal);
+	const desktop = result.details;
+	const details: SnapshotDetails = {
+		tool: "snapshot",
+		contextId,
+		kind: "desktop_window",
+		snapshotId: desktop.capture.stateId,
+		availableActions: ["snapshot", "click", "double_click", "type_text", "set_text", "keypress", "scroll", "drag", "wait", "arrange_window"],
+		desktop,
+	};
+	return { content: result.content, details };
 }
 
 async function performScreenshot(params: ScreenshotParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails>> {
@@ -2873,7 +3128,9 @@ async function performScreenshot(params: ScreenshotParams, signal?: AbortSignal)
 	return await buildToolResult("screenshot", summary, captureResult, executionTrace("screenshot", "stealth", { fallbackUsed: false }), signal, normalizeImageMode(params.image));
 }
 
-async function performClick(params: ClickParams, signal?: AbortSignal, tool = "click"): Promise<AgentToolResult<ComputerUseDetails>> {
+async function performClick(params: ClickParams, signal?: AbortSignal, tool = "click"): Promise<AgentToolResult<ComputerUseDetails | SnapshotDetails>> {
+	const browserResult = await performBrowserClick(params, signal);
+	if (browserResult) return browserResult;
 	runtimeState.currentImageMode = normalizeImageMode(params.image);
 	await selectWindowIfProvided(params.window, signal);
 	const capture = validateStateId(params.stateId);
@@ -2899,6 +3156,9 @@ async function performClick(params: ClickParams, signal?: AbortSignal, tool = "c
 }
 
 async function performTypeText(params: TypeTextParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails>> {
+	if (isBrowserContextId(trimOrUndefined(params.contextId))) {
+		throw new Error("type_text is not supported for browser contexts because it has no ref parameter. Use set_text with a browser ref from snapshot instead.");
+	}
 	runtimeState.currentImageMode = normalizeImageMode(params.image);
 	await selectWindowIfProvided(params.window, signal);
 	const text = typeof params.text === "string" ? params.text : "";
@@ -2910,7 +3170,9 @@ async function performTypeText(params: TypeTextParams, signal?: AbortSignal): Pr
 	);
 }
 
-async function performSetText(params: SetTextParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails>> {
+async function performSetText(params: SetTextParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails | SnapshotDetails>> {
+	const browserResult = await performBrowserSetText(params, signal);
+	if (browserResult) return browserResult;
 	runtimeState.currentImageMode = normalizeImageMode(params.image);
 	await selectWindowIfProvided(params.window, signal);
 	const text = typeof params.text === "string" ? params.text : "";
@@ -2934,7 +3196,9 @@ async function performKeypress(params: KeypressParams, signal?: AbortSignal): Pr
 	);
 }
 
-async function performScroll(params: ScrollParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails>> {
+async function performScroll(params: ScrollParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails | SnapshotDetails>> {
+	const browserResult = await performBrowserScroll(params, signal);
+	if (browserResult) return browserResult;
 	runtimeState.currentImageMode = normalizeImageMode(params.image);
 	await selectWindowIfProvided(params.window, signal);
 	const capture = validateStateId(params.stateId);
@@ -2977,7 +3241,7 @@ async function performDrag(params: DragParams, signal?: AbortSignal): Promise<Ag
 	);
 }
 
-async function performDoubleClick(params: ClickParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails>> {
+async function performDoubleClick(params: ClickParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails | SnapshotDetails>> {
 	return await performClick({ ...params, clickCount: 2 }, signal, "double_click");
 }
 
@@ -3072,17 +3336,82 @@ async function performArrangeWindow(params: ArrangeWindowParams, signal?: AbortS
 	});
 }
 
-async function performNavigateBrowser(params: NavigateBrowserParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails>> {
+function managedBrowserExecutable(browser: "helium" | "chrome"): string {
+	return browser === "helium" ? HELIUM_EXECUTABLE : CHROME_EXECUTABLE;
+}
+
+function freeTcpPort(): Promise<number> {
+	return new Promise((resolve, reject) => {
+		const server = net.createServer();
+		server.on("error", reject);
+		server.listen(0, "127.0.0.1", () => {
+			const address = server.address();
+			const port = typeof address === "object" && address ? address.port : 0;
+			server.close(() => port > 0 ? resolve(port) : reject(new Error("Could not allocate a local CDP port.")));
+		});
+	});
+}
+
+async function waitForCdpPort(port: number, signal?: AbortSignal): Promise<void> {
+	const deadline = Date.now() + MANAGED_BROWSER_READY_TIMEOUT_MS;
+	while (Date.now() < deadline) {
+		if (signal?.aborted) throw new Error("Browser launch was aborted.");
+		try {
+			const response = await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(500) });
+			if (response.ok) return;
+		} catch {
+			// Browser is still starting.
+		}
+		await sleep(200, signal);
+	}
+	throw new Error(`Managed browser did not expose CDP on port ${port} within ${MANAGED_BROWSER_READY_TIMEOUT_MS}ms.`);
+}
+
+// Side effects: starts a Pi-managed browser process, replaces any previous managed browser,
+// and sets PI_COMPUTER_USE_CDP_PORT for subsequent CDP context discovery.
+async function performLaunchBrowserContext(params: LaunchBrowserContextParams, signal?: AbortSignal): Promise<AgentToolResult<LaunchBrowserContextDetails>> {
+	const browser = params.browser === "chrome" ? "chrome" : "helium";
+	const executable = managedBrowserExecutable(browser);
+	await access(executable, fsConstants.X_OK).catch(() => {
+		throw new Error(`${browser} executable was not found at ${executable}.`);
+	});
+	const port = Number.isInteger(params.port) && params.port! > 0 ? Math.trunc(params.port!) : await freeTcpPort();
+	const url = trimOrUndefined(params.url) ?? "about:blank";
+	const profileDir = path.join(os.tmpdir(), `pi-${browser}-cdp-${port}`);
+	runtimeState.managedBrowser?.kill("SIGTERM");
+	const args = [
+		`--remote-debugging-port=${port}`,
+		`--user-data-dir=${profileDir}`,
+		"--no-first-run",
+		"--no-default-browser-check",
+		url,
+	];
+	runtimeState.managedBrowser = spawn(executable, args, { stdio: "ignore", detached: false });
+	process.env.PI_COMPUTER_USE_CDP_PORT = String(port);
+	await waitForCdpPort(port, signal);
+	const contextsResult = await performListContexts(signal);
+	const contexts = contextsResult.details.contexts.filter((context) => context.kind === "browser_page");
+	const details: LaunchBrowserContextDetails = { tool: "launch_browser_context", browser, port, url, contexts };
+	const lines = contexts.map((context) => `- ${context.contextId} ${context.title}${context.url ? ` — ${context.url}` : ""}`);
+	return { content: [{ type: "text", text: `Launched ${browser} with CDP on port ${port}. Use snapshot({ contextId }) on a browser context.\n${lines.join("\n")}` }], details };
+}
+
+async function performNavigateBrowser(params: NavigateBrowserParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails | SnapshotDetails>> {
+	const contextId = trimOrUndefined(params.contextId);
+	const url = trimOrUndefined(params.url);
+	if (!url) throw new Error("navigate_browser.url must be a non-empty URL or browser-search string.");
+	if (isBrowserContextId(contextId)) {
+		if (!/^https?:/i.test(url)) throw new Error("navigate_browser with browser contextId only supports http(s) URLs.");
+		const ok = await cdpNavigateContext(contextId, url);
+		if (!ok) throw new Error(`Browser context '${contextId}' is no longer available. Call list_contexts and snapshot again.`);
+		return await refreshBrowserSnapshot(contextId, params.image, signal);
+	}
 	runtimeState.currentImageMode = normalizeImageMode(params.image);
 	await selectWindowIfProvided(params.window, signal);
 	const target = await ensureTargetWindowId(await resolveCurrentTarget(signal), signal);
 	assertBrowserUseAllowed(target);
 	if (!isBrowserApp(target.appName, target.bundleId)) {
 		throw new Error(`navigate_browser requires a browser window, but the target is '${target.appName}'.`);
-	}
-	const url = trimOrUndefined(params.url);
-	if (!url) {
-		throw new Error("navigate_browser.url must be a non-empty URL or browser-search string.");
 	}
 	const scheme = /^([a-zA-Z][a-zA-Z0-9+.-]*):/.exec(url)?.[1];
 	const looksLikeUrl = /^([a-zA-Z][a-zA-Z0-9+.-]*):\/\//.test(url) || !/\s/.test(url);
@@ -3130,6 +3459,17 @@ async function performNavigateBrowser(params: NavigateBrowserParams, signal?: Ab
 			signal,
 		);
 	});
+}
+
+async function performEvaluateBrowser(params: EvaluateBrowserParams): Promise<AgentToolResult<EvaluateBrowserDetails>> {
+	const contextId = trimOrUndefined(params.contextId);
+	const expression = typeof params.expression === "string" ? params.expression : "";
+	if (!isBrowserContextId(contextId)) throw new Error("evaluate_browser.contextId must be a browser context id from list_contexts.");
+	if (!expression.trim()) throw new Error("evaluate_browser.expression must be non-empty JavaScript.");
+	const result = await cdpEvaluateForContext(contextId, expression);
+	if (!result) throw new Error(`Browser context '${contextId}' is no longer available. Call list_contexts and snapshot again.`);
+	const details: EvaluateBrowserDetails = { tool: "evaluate_browser", contextId, value: result.value };
+	return { content: [{ type: "text", text: `Evaluated JavaScript in ${contextId}: ${JSON.stringify(result.value)}` }], details };
 }
 
 async function performComputerActions(params: ComputerActionsParams, signal?: AbortSignal): Promise<AgentToolResult<ComputerUseDetails>> {
@@ -3269,8 +3609,10 @@ function makeToolExecutor<P, D>(perform: (params: P, signal?: AbortSignal) => Pr
 
 export const executeListApps = makeToolExecutor((_params: Record<string, never>, signal) => performListApps(signal));
 export const executeListWindows = makeToolExecutor(performListWindows);
+export const executeListContexts = makeToolExecutor((_params: Record<string, never>, signal) => performListContexts(signal));
+export const executeSnapshot = makeToolExecutor(performSnapshot);
 export const executeScreenshot = makeToolExecutor(performScreenshot);
-export const executeClick = makeToolExecutor<ClickParams, ComputerUseDetails>(performClick);
+export const executeClick = makeToolExecutor<ClickParams, ComputerUseDetails | SnapshotDetails>(performClick);
 export const executeDoubleClick = makeToolExecutor(performDoubleClick);
 export const executeMoveMouse = makeToolExecutor(performMoveMouse);
 export const executeDrag = makeToolExecutor(performDrag);
@@ -3280,6 +3622,8 @@ export const executeTypeText = makeToolExecutor(performTypeText);
 export const executeSetText = makeToolExecutor(performSetText);
 export const executeArrangeWindow = makeToolExecutor(performArrangeWindow);
 export const executeNavigateBrowser = makeToolExecutor(performNavigateBrowser);
+export const executeEvaluateBrowser = makeToolExecutor(performEvaluateBrowser);
+export const executeLaunchBrowserContext = makeToolExecutor(performLaunchBrowserContext);
 export const executeComputerActions = makeToolExecutor(performComputerActions);
 export const executeWait = makeToolExecutor(performWait);
 
