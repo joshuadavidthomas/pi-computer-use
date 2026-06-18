@@ -654,6 +654,7 @@ const MANAGED_BROWSER_READY_TIMEOUT_MS = 15_000;
 const AUTO_IMAGE_MAX_DIMENSION = 1_000;
 const EXPLICIT_IMAGE_MAX_DIMENSION = 1_600;
 const AX_TARGET_TEXT_PREVIEW_CHARS = 240;
+const BROWSER_SNAPSHOT_TEXT_PREVIEW_CHARS = 2_000;
 const HELIUM_EXECUTABLE = "/Applications/Helium.app/Contents/MacOS/Helium";
 const CHROME_EXECUTABLE = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 
@@ -3085,14 +3086,14 @@ async function performListContexts(signal?: AbortSignal): Promise<AgentToolResul
 		pid: window.pid,
 		windowRef: window.windowRef,
 		windowId: window.windowId,
-		availableActions: ["snapshot", "click", "double_click", "type_text", "set_text", "keypress", "scroll", "drag", "wait", "arrange_window"],
+		availableActions: ["snapshot", "read_text", "wait_for", "click", "double_click", "type_text", "set_text", "keypress", "scroll", "drag", "wait", "arrange_window"],
 	}));
 	const browserContexts: ContextDetails["contexts"] = (await listCdpPageContexts().catch(() => [])).map((page) => ({
 		contextId: page.contextId,
 		kind: "browser_page",
 		title: page.title,
 		url: page.url,
-		availableActions: ["snapshot", "click", "set_text", "scroll", "navigate_browser", "evaluate_browser"],
+		availableActions: ["snapshot", "read_text", "wait_for", "click", "set_text", "scroll", "navigate_browser", "evaluate_browser"],
 	}));
 	const contexts = [...browserContexts, ...desktopContexts];
 	const details: ContextDetails = { tool: "list_contexts", contexts, config };
@@ -3156,6 +3157,10 @@ async function performBrowserScroll(params: ScrollParams, signal?: AbortSignal):
 	return await refreshBrowserSnapshot(contextId, params.image, signal);
 }
 
+function textPreview(value: string, maxChars: number): string {
+	return value.length > maxChars ? `${value.slice(0, maxChars)}…` : value;
+}
+
 function sliceText(value: string, offsetValue: unknown, limitValue: unknown): Pick<ReadTextDetails, "offset" | "limit" | "totalChars" | "hasMore" | "text"> {
 	const offset = Math.max(0, Math.trunc(toFiniteNumber(offsetValue, 0)));
 	const limit = Math.max(1, Math.min(100_000, Math.trunc(toFiniteNumber(limitValue, 4_000))));
@@ -3174,7 +3179,8 @@ async function performReadText(params: ReadTextParams, signal?: AbortSignal): Pr
 	const contextId = trimOrUndefined(params.contextId);
 	const ref = trimOrUndefined(params.ref);
 	if (isBrowserContextId(contextId)) {
-		const snapshot = await cdpSnapshotForContext(contextId);
+		const cached = params.stateId ? runtimeState.browserSnapshots.get(params.stateId) : undefined;
+		const snapshot = cached?.contextId === contextId ? cached : await cdpSnapshotForContext(contextId);
 		if (!snapshot) throw new Error(`Browser context '${contextId}' is no longer available. Call list_contexts and snapshot again.`);
 		const sliced = sliceText(snapshot.text, params.offset, params.limit);
 		const details: ReadTextDetails = { tool: "read_text", contextId, ref, ...sliced };
@@ -3283,17 +3289,18 @@ async function performSnapshot(params: SnapshotParams, signal?: AbortSignal): Pr
 	const browser = await cdpSnapshotForContext(contextId).catch(() => undefined);
 	if (browser) {
 		const targetText = browser.targets.length
-			? `\n\nTargets:\n${browser.targets.map((target) => `${target.ref} ${target.role} \"${target.name}\" [${target.actions.join(",")}]`).join("\n")}`
+			? `\n\nTargets:\n${browser.targets.map((target) => `${target.ref} ${target.role} \"${previewAxText(target.name)}\" [${target.actions.join(",")}]`).join("\n")}`
 			: "";
-		const pageText = browser.text ? `\n\nPage text:\n${browser.text.slice(0, 12_000)}` : "";
+		const browserTextPreview = textPreview(browser.text, BROWSER_SNAPSHOT_TEXT_PREVIEW_CHARS);
+		const pageText = browserTextPreview ? `\n\nPage text preview (${browserTextPreview.length}/${browser.text.length} chars; use read_text for more):\n${browserTextPreview}` : "";
 		runtimeState.browserSnapshots.set(browser.snapshotId, browser);
 		const details: SnapshotDetails = {
 			tool: "snapshot",
 			contextId,
 			kind: "browser_page",
 			snapshotId: browser.snapshotId,
-			availableActions: ["snapshot", "click", "set_text", "scroll", "navigate_browser", "evaluate_browser"],
-			browser,
+			availableActions: ["snapshot", "read_text", "wait_for", "click", "set_text", "scroll", "navigate_browser", "evaluate_browser"],
+			browser: { ...browser, text: browserTextPreview },
 		};
 		return { content: [{ type: "text", text: `Captured browser context ${contextId}: ${browser.title}.${targetText}${pageText}` }], details };
 	}
